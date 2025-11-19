@@ -2,7 +2,7 @@
 """
 Admin Layout
 Advanced interface with Debug Mode, Test Mode, and Data Preview.
-Updated: Added 'Smart Reset' to clear data without logging out.
+Updated: Injects 'casino_mode' into extraction logic.
 """
 
 import streamlit as st
@@ -55,6 +55,10 @@ class AdminLayout:
     def _render_step1(self, handler):
         st.subheader("Step 1: Extraction")
         input_data = handler.get_input_interface()
+        
+        # --- CRITICAL FIX: Inject Casino Mode from Global State ---
+        input_data['casino_mode'] = st.session_state.get('global_casino_mode', False)
+        
         is_multi = handler.is_multi_file_input(input_data) if hasattr(handler, 'is_multi_file_input') else False
         
         if st.button("Extract Content", type="primary", disabled=not input_data.get('is_valid')):
@@ -76,13 +80,11 @@ class AdminLayout:
         with col_head:
             st.subheader("Step 2: Analysis")
         with col_btn:
-            # CONVENIENCE RESET BUTTON
             if st.button("🗑️ Discard & Restart", type="secondary", use_container_width=True):
                 self._smart_reset()
         
         # PREVIEW SECTION
         is_multi = 'admin_multi_extracted' in st.session_state
-        
         if is_multi:
             self._render_multi_preview()
         else:
@@ -96,16 +98,18 @@ class AdminLayout:
         test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False, help="Fast analysis, no deduplication.")
         audit_count = 1 if test_mode else 5
         
+        # Use global casino mode or allow override here if needed
+        casino_mode = st.session_state.get('global_casino_mode', False)
+        
         if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary", use_container_width=True):
             if is_multi:
-                self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count)
+                self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count, casino_mode)
             else:
-                self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count)
+                self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count, casino_mode)
 
     def _render_single_preview(self):
         content = st.session_state.get('extracted_content', '')
         st.info(f"✅ Content Extracted: {len(content)} characters")
-        
         with st.expander("👁️ View Extracted JSON", expanded=True):
             st.code(content, language='json')
 
@@ -114,7 +118,6 @@ class AdminLayout:
         try:
             files = json.loads(content_json).get('files', {})
             st.info(f"✅ Extracted {len(files)} files")
-            
             preview_file = st.selectbox("Inspect file:", list(files.keys()))
             if preview_file:
                 with st.expander(f"View: {preview_file}"):
@@ -122,19 +125,18 @@ class AdminLayout:
         except:
             st.error("Invalid multi-file JSON")
 
-    def _run_single(self, content, source, debug, count):
+    def _run_single(self, content, source, debug, count, casino_mode):
         with st.status(f"Analyzing... ({count} audits)") as status:
             result = processor.process_single_file(
                 content=content, 
                 source_description=source, 
-                casino_mode=False, 
+                casino_mode=casino_mode, 
                 debug_mode=debug, 
                 audit_count=count
             )
             
             if result['success']:
                 status.update(label="Done", state="complete")
-                
                 if result.get('word_bytes'):
                     st.download_button(
                         label="📄 Download Word Report", 
@@ -144,7 +146,6 @@ class AdminLayout:
                         type="primary", 
                         use_container_width=True
                     )
-                
                 if debug and result.get('debug_mode'):
                     try:
                         from ui.debug_components import show_debug_results
@@ -156,10 +157,10 @@ class AdminLayout:
             else:
                 st.error(result.get('error'))
 
-    def _run_multi(self, content_json, debug, count):
+    def _run_multi(self, content_json, debug, count, casino_mode):
         files = json.loads(content_json).get('files', {})
         with st.status(f"Analyzing {len(files)} files...") as status:
-            results = processor.process_multi_file(files, False, debug, count)
+            results = processor.process_multi_file(files, casino_mode, debug, count)
             status.update(label="Done", state="complete")
             
             for fname, res in results.items():
