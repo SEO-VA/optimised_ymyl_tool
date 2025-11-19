@@ -2,7 +2,7 @@
 """
 Admin Layout
 Advanced interface with Debug Mode, Test Mode, and Data Preview.
-Updated: Added 'Extracted Data Preview' section in Step 2.
+Updated: Added 'System State Inspector' to debug stuck screens.
 """
 
 import streamlit as st
@@ -13,8 +13,11 @@ import json
 class AdminLayout:
     
     def __init__(self):
-        # Determine current step
-        self.current_step = 2 if st.session_state.get('extracted_content') or st.session_state.get('admin_multi_extracted') else 1
+        # Logic to determine if we move to Step 2
+        has_single = st.session_state.get('extracted_content') is not None
+        has_multi = st.session_state.get('admin_multi_extracted') is not None
+        
+        self.current_step = 2 if (has_single or has_multi) else 1
     
     def render(self, selected_feature: str):
         try:
@@ -23,6 +26,17 @@ class AdminLayout:
             st.error(f"❌ {str(e)}")
             return
         
+        # --- DEBUG: System State Inspector ---
+        with st.sidebar:
+            with st.expander("🕵️ System State Inspector", expanded=False):
+                st.write(f"**Current Step:** {self.current_step}")
+                st.write("**Session Keys:**")
+                st.write(list(st.session_state.keys()))
+                if 'extracted_content' in st.session_state:
+                    content_len = len(st.session_state['extracted_content'])
+                    st.write(f"**Content Size:** {content_len} chars")
+        # -------------------------------------
+
         col1, col2 = st.columns([3, 1])
         with col1:
             if self.current_step == 1:
@@ -39,56 +53,40 @@ class AdminLayout:
         input_data = handler.get_input_interface()
         is_multi = handler.is_multi_file_input(input_data) if hasattr(handler, 'is_multi_file_input') else False
         
-        if st.button("Extract", disabled=not input_data.get('is_valid')):
-            success, content, err = handler.extract_content(input_data)
-            if success:
-                if is_multi:
-                    st.session_state['admin_multi_extracted'] = content
+        if st.button("Extract Content", type="primary", disabled=not input_data.get('is_valid')):
+            with st.spinner("Extracting..."):
+                success, content, err = handler.extract_content(input_data)
+                
+                if success:
+                    # Store data in session
+                    if is_multi:
+                        st.session_state['admin_multi_extracted'] = content
+                    else:
+                        st.session_state['extracted_content'] = content
+                        st.session_state['source_info'] = handler.get_source_description(input_data)
+                    
+                    # Force reload to trigger Step 2
+                    st.rerun()
                 else:
-                    st.session_state['extracted_content'] = content
-                    st.session_state['source_info'] = handler.get_source_description(input_data)
-                st.rerun()
-            else:
-                st.error(err)
+                    st.error(f"Extraction Failed: {err}")
 
     def _render_step2(self, handler):
         st.subheader("Step 2: Analysis")
         
-        # --- NEW: PREVIEW SECTION ---
-        st.info("👇 Check the extracted data below before running AI.")
-        
+        # PREVIEW SECTION
         is_multi = 'admin_multi_extracted' in st.session_state
         
         if is_multi:
-            content_json = st.session_state['admin_multi_extracted']
-            try:
-                files = json.loads(content_json).get('files', {})
-                file_list = list(files.keys())
-                
-                col_sel, col_len = st.columns([3, 1])
-                with col_sel:
-                    preview_file = st.selectbox("Select file to inspect:", file_list)
-                with col_len:
-                    if preview_file:
-                        st.caption(f"Size: {len(files[preview_file])} chars")
-                
-                if preview_file:
-                    with st.expander(f"👁️ View JSON: {preview_file}", expanded=False):
-                        st.code(files[preview_file], language='json')
-            except json.JSONDecodeError:
-                st.error("Failed to parse multi-file JSON for preview")
+            self._render_multi_preview()
         else:
-            content = st.session_state['extracted_content']
-            with st.expander("👁️ View Extracted JSON Payload", expanded=False):
-                st.caption(f"Total Size: {len(content)} characters")
-                st.code(content, language='json')
+            self._render_single_preview()
 
         st.divider()
 
-        # --- Analysis Controls ---
+        # ANALYSIS CONTROLS
         col1, col2 = st.columns(2)
         debug = col1.checkbox("Debug Mode", value=True)
-        test_mode = col2.checkbox("Test Mode (1 Audit)", value=False)
+        test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False, help="Fast analysis, no deduplication.")
         audit_count = 1 if test_mode else 5
         
         if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary"):
@@ -96,6 +94,26 @@ class AdminLayout:
                 self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count)
             else:
                 self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count)
+
+    def _render_single_preview(self):
+        content = st.session_state.get('extracted_content', '')
+        st.info(f"✅ Content Extracted: {len(content)} characters")
+        
+        with st.expander("👁️ View Extracted JSON", expanded=True):
+            st.code(content, language='json')
+
+    def _render_multi_preview(self):
+        content_json = st.session_state.get('admin_multi_extracted', '{}')
+        try:
+            files = json.loads(content_json).get('files', {})
+            st.info(f"✅ Extracted {len(files)} files")
+            
+            preview_file = st.selectbox("Inspect file:", list(files.keys()))
+            if preview_file:
+                with st.expander(f"View: {preview_file}"):
+                    st.code(files[preview_file], language='json')
+        except:
+            st.error("Invalid multi-file JSON")
 
     def _run_single(self, content, source, debug, count):
         with st.status(f"Analyzing... ({count} audits)") as status:
@@ -120,7 +138,6 @@ class AdminLayout:
                     )
                 
                 if debug and result.get('debug_mode'):
-                    # Show debug components if available, else raw json
                     try:
                         from ui.debug_components import show_debug_results
                         show_debug_results(result, None)
