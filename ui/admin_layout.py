@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Admin Layout
-Advanced interface with Debug Mode and Test Mode (1 vs 5 audits).
-Updated: Fixed missing Download Button in success view.
+Advanced interface with Debug Mode, Test Mode, and Data Preview.
+Updated: Added 'Extracted Data Preview' section in Step 2.
 """
 
 import streamlit as st
@@ -13,7 +13,7 @@ import json
 class AdminLayout:
     
     def __init__(self):
-        # Determine current step based on session state
+        # Determine current step
         self.current_step = 2 if st.session_state.get('extracted_content') or st.session_state.get('admin_multi_extracted') else 1
     
     def render(self, selected_feature: str):
@@ -54,15 +54,44 @@ class AdminLayout:
     def _render_step2(self, handler):
         st.subheader("Step 2: Analysis")
         
-        # Toggles
+        # --- NEW: PREVIEW SECTION ---
+        st.info("👇 Check the extracted data below before running AI.")
+        
+        is_multi = 'admin_multi_extracted' in st.session_state
+        
+        if is_multi:
+            content_json = st.session_state['admin_multi_extracted']
+            try:
+                files = json.loads(content_json).get('files', {})
+                file_list = list(files.keys())
+                
+                col_sel, col_len = st.columns([3, 1])
+                with col_sel:
+                    preview_file = st.selectbox("Select file to inspect:", file_list)
+                with col_len:
+                    if preview_file:
+                        st.caption(f"Size: {len(files[preview_file])} chars")
+                
+                if preview_file:
+                    with st.expander(f"👁️ View JSON: {preview_file}", expanded=False):
+                        st.code(files[preview_file], language='json')
+            except json.JSONDecodeError:
+                st.error("Failed to parse multi-file JSON for preview")
+        else:
+            content = st.session_state['extracted_content']
+            with st.expander("👁️ View Extracted JSON Payload", expanded=False):
+                st.caption(f"Total Size: {len(content)} characters")
+                st.code(content, language='json')
+
+        st.divider()
+
+        # --- Analysis Controls ---
         col1, col2 = st.columns(2)
         debug = col1.checkbox("Debug Mode", value=True)
         test_mode = col2.checkbox("Test Mode (1 Audit)", value=False)
         audit_count = 1 if test_mode else 5
         
-        is_multi = 'admin_multi_extracted' in st.session_state
-        
-        if st.button(f"Run Analysis ({audit_count} Audits)", type="primary"):
+        if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary"):
             if is_multi:
                 self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count)
             else:
@@ -81,7 +110,6 @@ class AdminLayout:
             if result['success']:
                 status.update(label="Done", state="complete")
                 
-                # --- FIXED: Always show Download Button ---
                 if result.get('word_bytes'):
                     st.download_button(
                         label="📄 Download Word Report", 
@@ -91,10 +119,13 @@ class AdminLayout:
                         type="primary"
                     )
                 
-                # Show Report content
                 if debug and result.get('debug_mode'):
-                    from ui.debug_components import show_debug_results
-                    show_debug_results(result, None) # Word bytes handled above
+                    # Show debug components if available, else raw json
+                    try:
+                        from ui.debug_components import show_debug_results
+                        show_debug_results(result, None)
+                    except ImportError:
+                        st.json(result.get('violations', []))
                 else:
                     st.markdown(result['report'])
             else:
@@ -109,7 +140,6 @@ class AdminLayout:
             for fname, res in results.items():
                 with st.expander(f"{fname} ({'Success' if res['success'] else 'Failed'})"):
                     if res['success']:
-                        # --- FIXED: Individual Download Button ---
                         if res.get('word_bytes'):
                             st.download_button(
                                 f"Download {fname}", 
