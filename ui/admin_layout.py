@@ -2,7 +2,7 @@
 """
 Admin Layout
 Advanced interface with Debug Mode, Test Mode, and Data Preview.
-Updated: Added 'System State Inspector' to debug stuck screens.
+Updated: Added 'Smart Reset' to clear data without logging out.
 """
 
 import streamlit as st
@@ -13,11 +13,8 @@ import json
 class AdminLayout:
     
     def __init__(self):
-        # Logic to determine if we move to Step 2
-        has_single = st.session_state.get('extracted_content') is not None
-        has_multi = st.session_state.get('admin_multi_extracted') is not None
-        
-        self.current_step = 2 if (has_single or has_multi) else 1
+        # Determine current step
+        self.current_step = 2 if st.session_state.get('extracted_content') or st.session_state.get('admin_multi_extracted') else 1
     
     def render(self, selected_feature: str):
         try:
@@ -30,11 +27,10 @@ class AdminLayout:
         with st.sidebar:
             with st.expander("🕵️ System State Inspector", expanded=False):
                 st.write(f"**Current Step:** {self.current_step}")
-                st.write("**Session Keys:**")
-                st.write(list(st.session_state.keys()))
+                content_len = 0
                 if 'extracted_content' in st.session_state:
                     content_len = len(st.session_state['extracted_content'])
-                    st.write(f"**Content Size:** {content_len} chars")
+                st.write(f"**Content Size:** {content_len} chars")
         # -------------------------------------
 
         col1, col2 = st.columns([3, 1])
@@ -44,9 +40,17 @@ class AdminLayout:
             else:
                 self._render_step2(feature_handler)
         with col2:
-            if st.button("🔄 Reset Admin"):
-                st.session_state.clear()
-                st.rerun()
+            # GLOBAL RESET (Sidebar)
+            if st.button("🔄 Reset All", use_container_width=True):
+                self._smart_reset()
+
+    def _smart_reset(self):
+        """Clears data but keeps user logged in."""
+        keys_to_keep = ['authenticated', 'username', 'global_casino_mode']
+        for key in list(st.session_state.keys()):
+            if key not in keys_to_keep:
+                del st.session_state[key]
+        st.rerun()
 
     def _render_step1(self, handler):
         st.subheader("Step 1: Extraction")
@@ -58,20 +62,23 @@ class AdminLayout:
                 success, content, err = handler.extract_content(input_data)
                 
                 if success:
-                    # Store data in session
                     if is_multi:
                         st.session_state['admin_multi_extracted'] = content
                     else:
                         st.session_state['extracted_content'] = content
                         st.session_state['source_info'] = handler.get_source_description(input_data)
-                    
-                    # Force reload to trigger Step 2
                     st.rerun()
                 else:
                     st.error(f"Extraction Failed: {err}")
 
     def _render_step2(self, handler):
-        st.subheader("Step 2: Analysis")
+        col_head, col_btn = st.columns([3, 1])
+        with col_head:
+            st.subheader("Step 2: Analysis")
+        with col_btn:
+            # CONVENIENCE RESET BUTTON
+            if st.button("🗑️ Discard & Restart", type="secondary", use_container_width=True):
+                self._smart_reset()
         
         # PREVIEW SECTION
         is_multi = 'admin_multi_extracted' in st.session_state
@@ -89,7 +96,7 @@ class AdminLayout:
         test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False, help="Fast analysis, no deduplication.")
         audit_count = 1 if test_mode else 5
         
-        if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary"):
+        if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary", use_container_width=True):
             if is_multi:
                 self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count)
             else:
@@ -134,7 +141,8 @@ class AdminLayout:
                         data=result['word_bytes'],
                         file_name=f"Report_{source}.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        type="primary"
+                        type="primary", 
+                        use_container_width=True
                     )
                 
                 if debug and result.get('debug_mode'):
