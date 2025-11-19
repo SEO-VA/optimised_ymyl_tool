@@ -8,7 +8,8 @@ Robust across languages and layout changes.
 import json
 import re
 from bs4 import BeautifulSoup, Comment
-from typing import Tuple, Optional, List, Set
+# --- FIX: Added 'Dict' to the imports below ---
+from typing import Tuple, Optional, List, Set, Dict
 from utils.helpers import safe_log, clean_text
 
 class HTMLContentExtractor:
@@ -90,10 +91,8 @@ class HTMLContentExtractor:
             lead.decompose()
 
         # Summary (data-qa="blockCasinoSummary")
-        # This is the Golden Key from your screenshot!
         summary_section = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_section:
-            # Get text from the specific div inside, or just the whole section
             text = clean_text(summary_section.get_text())
             metadata_items.append(f"SUMMARY: {text}")
             summary_section.decompose()
@@ -247,6 +246,7 @@ class HTMLContentExtractor:
             self.big_chunks = [{"big_chunk_index": 1, "content_name": "Empty", "small_chunks": ["No content found"]}]
         return json.dumps({"big_chunks": self.big_chunks}, indent=2, ensure_ascii=False)
 
+# Convenience function
 def extract_html_content(html: str) -> Tuple[bool, Optional[str], Optional[str]]:
     extractor = HTMLContentExtractor()
     return extractor.extract_content(html)
