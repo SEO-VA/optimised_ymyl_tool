@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V3 (Final Fix)
-Robust noise removal and precise targeting for Casino Review structure.
+HTML Content Extractor - Surgical Edition V3
+Targeted extraction for Casino Reviews.
+Fixes:
+1. Aggressively removes 'Rating', 'Slots', and 'Details' widgets (The "Kill List").
+2. Targets 'templateIntro' specifically for H1/Lead.
+3. Uses strict Schema.org paths for clean FAQs.
 """
 
 import json
@@ -19,7 +23,7 @@ class HTMLContentExtractor:
     
     def extract_content(self, html_content: str, casino_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
         try:
-            # Clean up messy HTML before parsing (remove Cloudflare email protection)
+            # Pre-clean: Remove "email protected" obfuscation from Cloudflare
             html_content = re.sub(r'\[email&#160;protected\]', 'EMAIL_HIDDEN', html_content)
             
             soup = BeautifulSoup(html_content, 'html.parser')
@@ -33,32 +37,33 @@ class HTMLContentExtractor:
             if casino_mode:
                 safe_log("Extractor: Running Surgical Casino Extraction")
                 
-                # 1. Extract Intro/Metadata (H1, Subtitle, Lead)
-                # Targeted before noise removal to ensure we get the H1
+                # 1. Extract Metadata (H1, Lead, Summary) - BEFORE noise removal
                 self._extract_metadata_chunk(soup)
                 
                 # 2. Extract FAQ (and remove from DOM)
                 faq_chunk = self._extract_faq_chunk(soup)
                 
-                # 3. AGGRESSIVE NOISE REMOVAL
-                # We specifically remove the widgets that polluted your previous output
+                # 3. EXECUTE KILL LIST (Crucial Step)
+                # Removes the widgets that polluted your previous JSON
                 self._remove_casino_widgets(soup)
                 
-                # 4. Main Content Scan (The "wrapper" section)
+                # 4. Main Content Scan
+                # We target the specific review wrapper
                 main_wrapper = soup.find('section', class_='wrapper')
+                
                 if main_wrapper:
                     self._extract_with_direct_chunking(main_wrapper)
                 else:
-                    safe_log("Extractor: Wrapper missing, scanning cleaned body", "WARNING")
+                    safe_log("Extractor: 'wrapper' missing, scanning cleaned body", "WARNING")
                     body = soup.find('body') or soup
                     self._extract_with_direct_chunking(body)
                 
-                # 5. Append FAQ at the end
+                # 5. Add FAQ at the end
                 if faq_chunk:
                     faq_chunk["big_chunk_index"] = self.chunk_index
                     self.big_chunks.append(faq_chunk)
                     self.chunk_index += 1
-            
+                    
             else:
                 # Generic Mode
                 safe_log("Extractor: Running Generic Extraction")
@@ -79,16 +84,17 @@ class HTMLContentExtractor:
 
     def _remove_casino_widgets(self, soup: BeautifulSoup):
         """
-        Removes specific widgets based on your provided JSON noise.
+        The 'Kill List': Removes specific data-qa widgets that are NOT editorial content.
+        This fixes the issue where '247bet Rating' and 'Most popular slots' appeared in your JSON.
         """
-        # Regex to match data-qa starting with specific strings
         noise_patterns = [
             re.compile(r'^blockCasinoInfo'),        # Top sticky header
             re.compile(r'^blockCasinoRating'),      # The "247bet Rating" widget
             re.compile(r'^blockCasinoPopularSlots'),# The "Most popular slots" widget
             re.compile(r'^blockCasinoDetails'),     # The "Details" table
-            re.compile(r'^templateAuthor'),         # Author bio (optional)
-            re.compile(r'^blockCasinoInfoSticky')   # Bottom sticky footer
+            re.compile(r'^templateAuthor'),         # Author bio
+            re.compile(r'^blockCasinoInfoSticky'),  # Bottom sticky footer
+            re.compile(r'^templateFooter')          # Main Footer
         ]
         
         for pattern in noise_patterns:
@@ -99,36 +105,33 @@ class HTMLContentExtractor:
         """Extracts H1, Subtitle, Lead, and Summary."""
         metadata_items = []
         
-        # INTRO SECTION (H1, Subtitle, Lead)
-        # Search for container with 'templateIntro' in data-qa
+        # A. INTRO SECTION (H1, Subtitle, Lead)
+        # We look for *any* container that looks like an Intro template
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
-        
         search_area = intro_container if intro_container else soup
         
         # H1
         h1 = search_area.find('h1')
         if h1:
             metadata_items.append(f"H1: {clean_text(h1.get_text())}")
-            h1.decompose() # Prevent re-reading
+            h1.decompose()
 
-        # Subtitle (span class="sub-title")
+        # Subtitle
         subtitle = search_area.select_one('.sub-title')
         if subtitle:
             metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
             subtitle.decompose()
 
-        # Lead (p class="lead")
+        # Lead
         lead = search_area.select_one('.lead')
         if lead:
             metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
             lead.decompose()
 
-        # SUMMARY SECTION (data-qa="blockCasinoSummary")
-        # We look for the specific text div inside
+        # B. SUMMARY SECTION
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
-            # The summary text is usually in a div with col-lg-8, but text extraction is safer
-            # We exclude the H2 "Summary" title
+            # Remove the "Summary" H2 title so it doesn't duplicate
             h2 = summary_block.find('h2')
             if h2: h2.decompose()
             
@@ -146,44 +149,46 @@ class HTMLContentExtractor:
             self.chunk_index += 1
 
     def _extract_faq_chunk(self, soup: BeautifulSoup) -> Optional[Dict]:
-        """Extracts FAQs using Schema.org Question/Answer objects."""
+        """Extracts FAQs using strict Schema.org structure."""
         faq_section = soup.find(attrs={'data-qa': 'templateFAQ'})
         if not faq_section: return None
             
         faq_items = []
         
-        # Look for Schema Question objects
+        # 1. Find Question Objects
         questions = faq_section.find_all(attrs={'itemtype': re.compile(r'schema\.org/Question')})
         
-        # Fallback: Look for cards if schema missing
+        # Fallback for when Schema is missing/broken
         if not questions:
             questions = faq_section.find_all(class_='card')
 
         for q in questions:
-            # Find Question Text
-            # Priority: itemprop="name" -> button text -> any h3
+            # 2. Get Question Text
+            # Priority: itemprop="name" -> button text
             q_text = ""
             q_el = q.find(attrs={'itemprop': 'name'})
             if not q_el: q_el = q.find('button')
             if q_el: q_text = clean_text(q_el.get_text())
             
-            # Find Answer Text
-            # Priority: itemprop="text" inside Answer -> itemprop="acceptedAnswer"
+            # 3. Get Answer Text
+            # Priority: itemprop="text" -> itemprop="acceptedAnswer" -> class="collapse"
             a_text = ""
-            a_container = q.find(attrs={'itemtype': re.compile(r'schema\.org/Answer')})
+            a_container = q.find(attrs={'itemprop': 'acceptedAnswer'})
+            
             if a_container:
+                # Schema usually nests text inside a div with itemprop="text"
                 a_el = a_container.find(attrs={'itemprop': 'text'})
-                if not a_el: a_el = a_container
+                if not a_el: a_el = a_container # Fallback to container text
                 a_text = clean_text(a_el.get_text())
             else:
-                # Fallback for non-schema (look for collapse div)
+                # Fallback for non-schema markup
                 collapse = q.find(class_='collapse')
                 if collapse: a_text = clean_text(collapse.get_text())
 
             if q_text and a_text:
                 faq_items.append(f"FAQ_Q: {q_text} // FAQ_A: {a_text}")
         
-        # Decompose to prevent generic scanner finding it
+        # Remove from DOM so generic chunker doesn't find it again
         faq_section.decompose()
         
         if faq_items:
@@ -211,7 +216,7 @@ class HTMLContentExtractor:
             formatted = None
 
             if tag == 'h2':
-                # Save current chunk
+                # Save previous chunk
                 if current_chunk_content:
                     self.big_chunks.append({
                         "big_chunk_index": self.chunk_index,
