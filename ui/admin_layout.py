@@ -2,6 +2,7 @@
 """
 Admin Layout
 Advanced interface with Debug Mode and Test Mode (1 vs 5 audits).
+Updated: Fixed missing Download Button in success view.
 """
 
 import streamlit as st
@@ -12,6 +13,7 @@ import json
 class AdminLayout:
     
     def __init__(self):
+        # Determine current step based on session state
         self.current_step = 2 if st.session_state.get('extracted_content') or st.session_state.get('admin_multi_extracted') else 1
     
     def render(self, selected_feature: str):
@@ -67,14 +69,34 @@ class AdminLayout:
                 self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count)
 
     def _run_single(self, content, source, debug, count):
-        with st.status("Analyzing...") as status:
-            result = processor.process_single_file(content, source, False, debug, count)
+        with st.status(f"Analyzing... ({count} audits)") as status:
+            result = processor.process_single_file(
+                content=content, 
+                source_description=source, 
+                casino_mode=False, 
+                debug_mode=debug, 
+                audit_count=count
+            )
+            
             if result['success']:
                 status.update(label="Done", state="complete")
+                
+                # --- FIXED: Always show Download Button ---
+                if result.get('word_bytes'):
+                    st.download_button(
+                        label="📄 Download Word Report", 
+                        data=result['word_bytes'],
+                        file_name=f"Report_{source}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        type="primary"
+                    )
+                
+                # Show Report content
                 if debug and result.get('debug_mode'):
-                    # Simple debug view if component missing
-                    st.json(result.get('violations', []))
-                st.markdown(result['report'])
+                    from ui.debug_components import show_debug_results
+                    show_debug_results(result, None) # Word bytes handled above
+                else:
+                    st.markdown(result['report'])
             else:
                 st.error(result.get('error'))
 
@@ -87,6 +109,14 @@ class AdminLayout:
             for fname, res in results.items():
                 with st.expander(f"{fname} ({'Success' if res['success'] else 'Failed'})"):
                     if res['success']:
+                        # --- FIXED: Individual Download Button ---
+                        if res.get('word_bytes'):
+                            st.download_button(
+                                f"Download {fname}", 
+                                res['word_bytes'], 
+                                f"{fname}.docx",
+                                key=f"dl_{fname}"
+                            )
                         st.markdown(res['report'])
                     else:
                         st.error(res.get('error'))
