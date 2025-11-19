@@ -2,7 +2,7 @@
 """
 Audit Orchestrator Module
 The Strategy Layer. Coordinates the Multi-Audit Workflow.
-Updated to support variable audit counts (Test Mode).
+Updated: Improved Markdown formatting for Translations.
 """
 
 import asyncio
@@ -31,7 +31,6 @@ class AuditOrchestrator:
             safe_log("Orchestrator: Missing Assistant IDs in secrets", "CRITICAL")
             raise
 
-    # UPDATE 1: Added audit_count parameter here
     async def run_analysis(self, 
                          content_json: str, 
                          casino_mode: bool, 
@@ -39,17 +38,12 @@ class AuditOrchestrator:
                          audit_count: int = 5) -> Dict[str, Any]:
         """
         Main entry point.
-        Args:
-            audit_count: Number of parallel audits to run (Default 5, use 1 for testing)
         """
         start_time = time.time()
-        
-        # 1. Select Assistant
         target_assistant_id = self.casino_id if casino_mode else self.regular_id
+        
         safe_log(f"Orchestrator: Starting {audit_count} audits (Casino: {casino_mode})")
 
-        # 2. Run Parallel Audits (Dynamic Count)
-        # UPDATE 2: Uses audit_count range instead of hardcoded 5
         tasks = [
             openai_service.get_response_async(
                 content=content_json,
@@ -59,10 +53,8 @@ class AuditOrchestrator:
             for i in range(audit_count)
         ]
         
-        # Wait for all to finish
         raw_results = await asyncio.gather(*tasks)
         
-        # 3. Parse Results
         all_violations = []
         successful_audits = 0
         raw_debug_data = []
@@ -71,7 +63,6 @@ class AuditOrchestrator:
             audit_id = i + 1
             if success and text:
                 violations = ResponseParser.parse_to_violations(text)
-                
                 if violations:
                     successful_audits += 1
                     for v in violations:
@@ -90,15 +81,18 @@ class AuditOrchestrator:
         if successful_audits == 0:
             return {
                 "success": False, 
-                "error": f"All {audit_count} AI audits failed to return valid data."
+                "error": f"All {audit_count} AI audits failed."
             }
 
-        # 4. Deduplication logic
-        unique_violations = await self._run_deduplication(all_violations, content_json)
+        # Deduplication Logic
+        if audit_count > 1:
+            unique_violations = await self._run_deduplication(all_violations, content_json)
+        else:
+            safe_log("Orchestrator: Skipping deduplication (Test Mode)", "INFO")
+            unique_violations = all_violations
         
-        # 5. Generate Report
+        # Generate Report
         report_md = self._generate_markdown(unique_violations, successful_audits)
-
         processing_time = time.time() - start_time
         
         return {
@@ -158,22 +152,26 @@ class AuditOrchestrator:
             md.append(f"### {count}. {emoji} {v.violation_type}")
             md.append(f"**Severity:** {v.severity.value.title()}")
             md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
+            
+            # --- NEW: Translation Formatting ---
+            # We use blockquotes (>) to make them stand out in the new Reporter
             if v.translation:
-                md.append(f"**Translation:** \"{v.translation}\"")
+                md.append(f"> 🌐 **Translation:** _{v.translation}_")
                 
             md.append(f"**Explanation:** {v.explanation}")
             md.append(f"**Guideline:** Section {v.guideline_section} (Page {v.page_number})")
             md.append(f"**Suggested Fix:** \"{v.suggested_rewrite}\"")
+            
+            # Also show translation for the Fix if available
+            if v.rewrite_translation:
+                 md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
+            
             md.append("\n---\n")
             count += 1
 
         md.append(f"\n**Total Violations:** {len(violations)}")
         return "\n".join(md)
 
-# UPDATE 3: The bridge function MUST accept the new argument
 async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
-    """
-    Bridge function that allows Processor.py to call this new system.
-    """
     orchestrator = AuditOrchestrator()
     return await orchestrator.run_analysis(content, casino_mode, debug_mode, audit_count)
