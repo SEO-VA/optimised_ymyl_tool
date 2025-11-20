@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 Admin Layout
-Advanced interface with Debug Mode, Test Mode, and Data Preview.
-Updated: Injects 'casino_mode' into extraction logic.
+Advanced interface with Debug Mode.
+Updated: Triggers Notification on Success.
 """
 
 import streamlit as st
 from utils.feature_registry import FeatureRegistry
 from core.processor import processor
+from utils.helpers import trigger_completion_notification
 import json
 
 class AdminLayout:
     
     def __init__(self):
-        # Determine current step
         self.current_step = 2 if st.session_state.get('extracted_content') or st.session_state.get('admin_multi_extracted') else 1
     
     def render(self, selected_feature: str):
@@ -23,7 +23,6 @@ class AdminLayout:
             st.error(f"❌ {str(e)}")
             return
         
-        # --- DEBUG: System State Inspector ---
         with st.sidebar:
             with st.expander("🕵️ System State Inspector", expanded=False):
                 st.write(f"**Current Step:** {self.current_step}")
@@ -31,7 +30,6 @@ class AdminLayout:
                 if 'extracted_content' in st.session_state:
                     content_len = len(st.session_state['extracted_content'])
                 st.write(f"**Content Size:** {content_len} chars")
-        # -------------------------------------
 
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -40,12 +38,10 @@ class AdminLayout:
             else:
                 self._render_step2(feature_handler)
         with col2:
-            # GLOBAL RESET (Sidebar)
             if st.button("🔄 Reset All", use_container_width=True):
                 self._smart_reset()
 
     def _smart_reset(self):
-        """Clears data but keeps user logged in."""
         keys_to_keep = ['authenticated', 'username', 'global_casino_mode']
         for key in list(st.session_state.keys()):
             if key not in keys_to_keep:
@@ -55,10 +51,7 @@ class AdminLayout:
     def _render_step1(self, handler):
         st.subheader("Step 1: Extraction")
         input_data = handler.get_input_interface()
-        
-        # --- CRITICAL FIX: Inject Casino Mode from Global State ---
         input_data['casino_mode'] = st.session_state.get('global_casino_mode', False)
-        
         is_multi = handler.is_multi_file_input(input_data) if hasattr(handler, 'is_multi_file_input') else False
         
         if st.button("Extract Content", type="primary", disabled=not input_data.get('is_valid')):
@@ -83,7 +76,6 @@ class AdminLayout:
             if st.button("🗑️ Discard & Restart", type="secondary", use_container_width=True):
                 self._smart_reset()
         
-        # PREVIEW SECTION
         is_multi = 'admin_multi_extracted' in st.session_state
         if is_multi:
             self._render_multi_preview()
@@ -92,13 +84,11 @@ class AdminLayout:
 
         st.divider()
 
-        # ANALYSIS CONTROLS
         col1, col2 = st.columns(2)
         debug = col1.checkbox("Debug Mode", value=True)
-        test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False, help="Fast analysis, no deduplication.")
+        test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False)
         audit_count = 1 if test_mode else 5
         
-        # Use global casino mode or allow override here if needed
         casino_mode = st.session_state.get('global_casino_mode', False)
         
         if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary", use_container_width=True):
@@ -137,6 +127,8 @@ class AdminLayout:
             
             if result['success']:
                 status.update(label="Done", state="complete")
+                trigger_completion_notification() # <-- NOTIFICATION
+                
                 if result.get('word_bytes'):
                     st.download_button(
                         label="📄 Download Word Report", 
@@ -146,6 +138,7 @@ class AdminLayout:
                         type="primary", 
                         use_container_width=True
                     )
+                
                 if debug and result.get('debug_mode'):
                     try:
                         from ui.debug_components import show_debug_results
@@ -162,6 +155,8 @@ class AdminLayout:
         with st.status(f"Analyzing {len(files)} files...") as status:
             results = processor.process_multi_file(files, casino_mode, debug, count)
             status.update(label="Done", state="complete")
+            
+            trigger_completion_notification() # <-- NOTIFICATION
             
             for fname, res in results.items():
                 with st.expander(f"{fname} ({'Success' if res['success'] else 'Failed'})"):
