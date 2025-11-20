@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Audit Orchestrator Module
-The Strategy Layer. Coordinates the Multi-Audit Workflow.
-Updated: Improved Markdown formatting for Translations.
+Updated: Added 'Python Safety Net' (_restore_translations) to force translations back 
+into the report if the Deduplicator AI drops them.
 """
 
 import asyncio
@@ -17,10 +17,10 @@ from core.service import openai_service
 from core.parser import ResponseParser
 from utils.helpers import safe_log
 
+# CONTROL CONCURRENCY
+MAX_CONCURRENT_AUDITS = 3
+
 class AuditOrchestrator:
-    """
-    Manages the YMYL Audit Workflow.
-    """
     
     def __init__(self):
         try:
@@ -36,23 +36,24 @@ class AuditOrchestrator:
                          casino_mode: bool, 
                          debug_mode: bool,
                          audit_count: int = 5) -> Dict[str, Any]:
-        """
-        Main entry point.
-        """
         start_time = time.time()
         target_assistant_id = self.casino_id if casino_mode else self.regular_id
         
-        safe_log(f"Orchestrator: Starting {audit_count} audits (Casino: {casino_mode})")
+        safe_log(f"Orchestrator: Starting {audit_count} audits (Max concurrent: {MAX_CONCURRENT_AUDITS})")
 
-        tasks = [
-            openai_service.get_response_async(
-                content=content_json,
-                assistant_id=target_assistant_id,
-                task_name=f"Audit #{i+1}"
-            )
-            for i in range(audit_count)
-        ]
-        
+        # --- RATE LIMIT PROTECTION ---
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
+
+        async def _run_with_semaphore(index):
+            async with semaphore:
+                await asyncio.sleep(index * 0.5) 
+                return await openai_service.get_response_async(
+                    content=content_json,
+                    assistant_id=target_assistant_id,
+                    task_name=f"Audit #{index+1}"
+                )
+
+        tasks = [_run_with_semaphore(i) for i in range(audit_count)]
         raw_results = await asyncio.gather(*tasks)
         
         all_violations = []
@@ -81,7 +82,7 @@ class AuditOrchestrator:
         if successful_audits == 0:
             return {
                 "success": False, 
-                "error": f"All {audit_count} AI audits failed."
+                "error": f"All {audit_count} audits failed. (Check OpenAI Rate Limits)"
             }
 
         # Deduplication Logic
@@ -112,27 +113,63 @@ class AuditOrchestrator:
         safe_log(f"Orchestrator: Deduplicating {len(all_violations)} violations...")
 
         payload = {
-            "task": "deduplicate_violations",
-            "total_violations_input": len(all_violations),
+            "task": "deduplicate_violations_and_merge",
+            "IMPORTANT_RULE": "You MUST PRESERVE the 'translation' and 'rewrite_translation' fields for every violation if they exist in the input. Do not drop them.",
+            "input_violation_count": len(all_violations),
             "violations": [v.to_dict() for v in all_violations]
         }
         
-        payload_json = json.dumps(payload, indent=2)
-        
         success, text, error = await openai_service.get_response_async(
-            content=payload_json,
+            content=json.dumps(payload, indent=2),
             assistant_id=self.dedup_id,
             task_name="Deduplicator",
             timeout_seconds=400
         )
         
+        final_list = []
         if success and text:
-            unique_violations = ResponseParser.parse_to_violations(text)
-            if unique_violations:
-                return unique_violations
+            deduped_list = ResponseParser.parse_to_violations(text)
+            # --- PYTHON SAFETY NET ---
+            # The AI might still drop translations. We forcefully put them back.
+            final_list = self._restore_translations(deduped_list, all_violations)
+            safe_log(f"Orchestrator: Deduplication complete. {len(all_violations)} -> {len(final_list)}")
+        else:
+            safe_log("Orchestrator: Deduplication AI failed, returning raw list.", "ERROR")
+            final_list = all_violations
+
+        return final_list
+
+    def _restore_translations(self, unique_list: List[Violation], original_list: List[Violation]) -> List[Violation]:
+        """
+        Looks up the original 'problematic_text' to find translations that the Deduplicator AI dropped.
+        """
+        # Build a lookup map from the raw data
+        # Key: Text snippet -> Value: Translation
+        translation_map = {}
+        rewrite_map = {}
         
-        safe_log("Orchestrator: Deduplication AI failed, returning raw list.", "ERROR")
-        return all_violations
+        for v in original_list:
+            if v.problematic_text:
+                key = v.problematic_text.strip()[:50] # Use first 50 chars as key to handle minor AI edits
+                if v.translation:
+                    translation_map[key] = v.translation
+                if v.rewrite_translation:
+                    rewrite_map[key] = v.rewrite_translation
+        
+        # Restore to unique list
+        for v in unique_list:
+            if v.problematic_text:
+                key = v.problematic_text.strip()[:50]
+                
+                # Restore Translation
+                if not v.translation and key in translation_map:
+                    v.translation = translation_map[key]
+                
+                # Restore Rewrite Translation
+                if not v.rewrite_translation and key in rewrite_map:
+                    v.rewrite_translation = rewrite_map[key]
+                    
+        return unique_list
 
     def _generate_markdown(self, violations: List[Violation], audit_count: int) -> str:
         date_str = datetime.now().strftime("%Y-%m-%d")
@@ -153,8 +190,6 @@ class AuditOrchestrator:
             md.append(f"**Severity:** {v.severity.value.title()}")
             md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
             
-            # --- NEW: Translation Formatting ---
-            # We use blockquotes (>) to make them stand out in the new Reporter
             if v.translation:
                 md.append(f"> 🌐 **Translation:** _{v.translation}_")
                 
@@ -162,7 +197,6 @@ class AuditOrchestrator:
             md.append(f"**Guideline:** Section {v.guideline_section} (Page {v.page_number})")
             md.append(f"**Suggested Fix:** \"{v.suggested_rewrite}\"")
             
-            # Also show translation for the Fix if available
             if v.rewrite_translation:
                  md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
             
