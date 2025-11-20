@@ -2,10 +2,7 @@
 """
 Report Generator - Advanced Edition
 Converts Markdown text into a professionally formatted Word (.docx) document.
-Features:
-- Parses **bold** and _italic_ syntax
-- Handles Blockquotes (>) for translations
-- Color-codes Severity
+Updated: Fixed 'IndexError' by applying color AFTER text is added.
 """
 
 import io
@@ -46,7 +43,10 @@ def generate_word_report(markdown_content: str, title: str, casino_mode: bool) -
             elif line.startswith('---'):
                 p = doc.add_paragraph('_' * 50)
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p.runs[0].font.color.rgb = RGBColor(200, 200, 200)
+                if p.runs:
+                    p.runs[0].font.color.rgb = RGBColor(200, 200, 200)
+                else:
+                    p.add_run().font.color.rgb = RGBColor(200, 200, 200)
             elif line.startswith('> '):
                 # Blockquote (Used for Translations)
                 p = doc.add_paragraph()
@@ -69,6 +69,7 @@ def generate_word_report(markdown_content: str, title: str, casino_mode: bool) -
         
     except Exception as e:
         safe_log(f"Reporter Error: {e}", "ERROR")
+        # Return a basic error document instead of crashing
         return b""
 
 def _add_formatted_text(paragraph, text, is_translation=False):
@@ -76,11 +77,12 @@ def _add_formatted_text(paragraph, text, is_translation=False):
     Parses markdown-style formatting within a paragraph.
     Supports **bold** and _italics_.
     """
-    # 1. Colorize Severity Emojis (Whole paragraph if detected)
+    # 1. Determine Color (But don't apply it yet)
+    target_color = None
     if '🔴' in text or 'Critical' in text:
-        paragraph.runs[0].font.color.rgb = RGBColor(231, 76, 60) if paragraph.runs else None
+        target_color = RGBColor(231, 76, 60) # Red
     elif '🟠' in text or 'High' in text:
-        paragraph.runs[0].font.color.rgb = RGBColor(230, 126, 34) if paragraph.runs else None
+        target_color = RGBColor(230, 126, 34) # Orange
         
     # 2. Split by bold markers first: **text**
     parts = re.split(r'(\*\*.*?\*\*)', text)
@@ -91,14 +93,22 @@ def _add_formatted_text(paragraph, text, is_translation=False):
             clean_text = part[2:-2]
             run = paragraph.add_run(clean_text)
             run.bold = True
+            
             if is_translation: run.italic = True
+            if target_color: run.font.color.rgb = target_color
         else:
             # Check for italics inside non-bold parts: _text_
             italic_parts = re.split(r'(_.*?_)', part)
             for sub_part in italic_parts:
+                run = None
                 if sub_part.startswith('_') and sub_part.endswith('_'):
                     run = paragraph.add_run(sub_part[1:-1])
                     run.italic = True
                 else:
-                    run = paragraph.add_run(sub_part)
-                    if is_translation: run.italic = True
+                    if sub_part: # Only add if not empty
+                        run = paragraph.add_run(sub_part)
+                        if is_translation: run.italic = True
+                
+                # Apply color to this run if needed
+                if run and target_color:
+                    run.font.color.rgb = target_color
