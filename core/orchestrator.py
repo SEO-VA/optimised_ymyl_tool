@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Audit Orchestrator Module
-Updated: Added 'Python Safety Net' (_restore_translations) to force translations back 
-into the report if the Deduplicator AI drops them.
+Updated: Captures 'raw_text' from Deduplicator for Admin Inspection.
 """
 
 import asyncio
 import json
 import time
+import re
 import streamlit as st
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from datetime import datetime
 
 from core.models import AnalysisResult, Violation
@@ -39,9 +39,9 @@ class AuditOrchestrator:
         start_time = time.time()
         target_assistant_id = self.casino_id if casino_mode else self.regular_id
         
-        safe_log(f"Orchestrator: Starting {audit_count} audits (Max concurrent: {MAX_CONCURRENT_AUDITS})")
+        safe_log(f"Orchestrator: Starting {audit_count} audits...")
 
-        # --- RATE LIMIT PROTECTION ---
+        # 1. Run Audits
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
 
         async def _run_with_semaphore(index):
@@ -73,48 +73,59 @@ class AuditOrchestrator:
                 if debug_mode:
                     raw_debug_data.append({
                         "audit_number": audit_id,
-                        "raw_response": text,
+                        "raw_response": text, # Capture Raw Audit Text
                         "parsed_count": len(violations)
                     })
             else:
                 safe_log(f"Audit #{audit_id} failed: {error}", "WARNING")
 
         if successful_audits == 0:
-            return {
-                "success": False, 
-                "error": f"All {audit_count} audits failed. (Check OpenAI Rate Limits)"
+            return {"success": False, "error": "All audits failed."}
+
+        # 2. Deduplication
+        dedup_raw_text = None
+        
+        if audit_count > 1:
+            # Capture both the List AND the Raw Text
+            unique_violations, dedup_raw_text = await self._run_deduplication(all_violations, content_json)
+        else:
+            unique_violations = all_violations
+            dedup_raw_text = "Skipped (Test Mode)"
+        
+        # 3. Report
+        report_md = self._generate_markdown(unique_violations, successful_audits)
+        
+        # 4. Bundle Debug Info
+        debug_package = None
+        if debug_mode:
+            debug_package = {
+                "audits": raw_debug_data,
+                "deduplicator_raw": dedup_raw_text, # Now available for Admin!
+                "input_violation_count": len(all_violations),
+                "output_violation_count": len(unique_violations)
             }
 
-        # Deduplication Logic
-        if audit_count > 1:
-            unique_violations = await self._run_deduplication(all_violations, content_json)
-        else:
-            safe_log("Orchestrator: Skipping deduplication (Test Mode)", "INFO")
-            unique_violations = all_violations
-        
-        # Generate Report
-        report_md = self._generate_markdown(unique_violations, successful_audits)
-        processing_time = time.time() - start_time
-        
         return {
             "success": True,
             "report": report_md,
             "violations": unique_violations,
-            "processing_time": processing_time,
+            "processing_time": time.time() - start_time,
             "total_violations_found": len(all_violations),
             "unique_violations": len(unique_violations),
-            "debug_info": raw_debug_data if debug_mode else None,
-            "debug_mode": debug_mode
+            "debug_info": debug_package,
+            "debug_mode": debug_mode,
+            "word_bytes": None # Filled by Processor
         }
 
-    async def _run_deduplication(self, all_violations: List[Violation], original_content_json: str) -> List[Violation]:
-        if not all_violations: return []
-
-        safe_log(f"Orchestrator: Deduplicating {len(all_violations)} violations...")
+    async def _run_deduplication(self, all_violations: List[Violation], original_content_json: str) -> Tuple[List[Violation], str]:
+        """
+        Returns Tuple: (Final List of Violations, Raw AI Response Text)
+        """
+        if not all_violations: return [], "No violations to deduplicate"
 
         payload = {
             "task": "deduplicate_violations_and_merge",
-            "IMPORTANT_RULE": "You MUST PRESERVE the 'translation' and 'rewrite_translation' fields for every violation if they exist in the input. Do not drop them.",
+            "IMPORTANT_RULE": "You MUST PRESERVE the 'translation' and 'rewrite_translation' fields for every violation if they exist in the input.",
             "input_violation_count": len(all_violations),
             "violations": [v.to_dict() for v in all_violations]
         }
@@ -129,45 +140,39 @@ class AuditOrchestrator:
         final_list = []
         if success and text:
             deduped_list = ResponseParser.parse_to_violations(text)
-            # --- PYTHON SAFETY NET ---
-            # The AI might still drop translations. We forcefully put them back.
+            # Restore translations using Python logic
             final_list = self._restore_translations(deduped_list, all_violations)
-            safe_log(f"Orchestrator: Deduplication complete. {len(all_violations)} -> {len(final_list)}")
-        else:
-            safe_log("Orchestrator: Deduplication AI failed, returning raw list.", "ERROR")
-            final_list = all_violations
+            return final_list, text # Return raw text for debug
+        
+        safe_log(f"Deduplication failed: {error}", "ERROR")
+        return all_violations, f"FAILED: {error}"
 
-        return final_list
+    def _normalize_key(self, text: str) -> str:
+        if not text: return ""
+        return re.sub(r'[\W_]+', '', text.lower())[:100]
 
     def _restore_translations(self, unique_list: List[Violation], original_list: List[Violation]) -> List[Violation]:
-        """
-        Looks up the original 'problematic_text' to find translations that the Deduplicator AI dropped.
-        """
-        # Build a lookup map from the raw data
-        # Key: Text snippet -> Value: Translation
-        translation_map = {}
-        rewrite_map = {}
-        
+        text_map = {} 
+        backup_map = {}
+
         for v in original_list:
-            if v.problematic_text:
-                key = v.problematic_text.strip()[:50] # Use first 50 chars as key to handle minor AI edits
-                if v.translation:
-                    translation_map[key] = v.translation
-                if v.rewrite_translation:
-                    rewrite_map[key] = v.rewrite_translation
-        
-        # Restore to unique list
+            if v.translation:
+                norm_text = self._normalize_key(v.problematic_text)
+                if norm_text: text_map[norm_text] = (v.translation, v.rewrite_translation)
+                backup_key = f"{v.page_number}-{v.violation_type}"
+                backup_map[backup_key] = (v.translation, v.rewrite_translation)
+
         for v in unique_list:
-            if v.problematic_text:
-                key = v.problematic_text.strip()[:50]
-                
-                # Restore Translation
-                if not v.translation and key in translation_map:
-                    v.translation = translation_map[key]
-                
-                # Restore Rewrite Translation
-                if not v.rewrite_translation and key in rewrite_map:
-                    v.rewrite_translation = rewrite_map[key]
+            if v.translation: continue
+            
+            norm_text = self._normalize_key(v.problematic_text)
+            if norm_text in text_map:
+                v.translation, v.rewrite_translation = text_map[norm_text]
+                continue 
+            
+            backup_key = f"{v.page_number}-{v.violation_type}"
+            if backup_key in backup_map:
+                 v.translation, v.rewrite_translation = backup_map[backup_key]
                     
         return unique_list
 
@@ -189,21 +194,13 @@ class AuditOrchestrator:
             md.append(f"### {count}. {emoji} {v.violation_type}")
             md.append(f"**Severity:** {v.severity.value.title()}")
             md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
-            
-            if v.translation:
-                md.append(f"> 🌐 **Translation:** _{v.translation}_")
-                
+            if v.translation: md.append(f"> 🌐 **Translation:** _{v.translation}_")
             md.append(f"**Explanation:** {v.explanation}")
             md.append(f"**Guideline:** Section {v.guideline_section} (Page {v.page_number})")
             md.append(f"**Suggested Fix:** \"{v.suggested_rewrite}\"")
-            
-            if v.rewrite_translation:
-                 md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
-            
+            if v.rewrite_translation: md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
             md.append("\n---\n")
             count += 1
-
-        md.append(f"\n**Total Violations:** {len(violations)}")
         return "\n".join(md)
 
 async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
