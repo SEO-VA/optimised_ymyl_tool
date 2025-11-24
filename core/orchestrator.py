@@ -2,7 +2,7 @@
 """
 Audit Orchestrator Module
 The Strategy Layer. Coordinates the "Strict Audit -> Smart Filter" Workflow.
-Updated: Fixes 'datetime' NameError and includes Safe Filtering.
+Updated: Captures input payload for debugging and implements softer filtering logic.
 """
 
 import asyncio
@@ -11,7 +11,6 @@ import time
 import re
 import streamlit as st
 from typing import List, Dict, Any, Tuple
-# --- FIX: Explicit Import ---
 from datetime import datetime
 
 from core.models import AnalysisResult, Violation
@@ -20,7 +19,7 @@ from core.parser import ResponseParser
 from utils.helpers import safe_log
 
 # CONTROL CONCURRENCY
-MAX_CONCURRENT_AUDITS = 5
+MAX_CONCURRENT_AUDITS = 3
 
 class AuditOrchestrator:
     
@@ -74,20 +73,21 @@ class AuditOrchestrator:
                         "raw_response": text,
                         "parsed_count": len(violations) if violations else 0
                     })
+            else:
+                safe_log(f"Audit #{audit_id} failed: {error}", "WARNING")
 
         if successful_audits == 0:
             return {"success": False, "error": "All audits failed."}
 
         # --- SANITATION 1: Filter Input ---
         clean_input_violations = self._sanitize_violations(all_violations)
-
-        # 2. Phase 2: The Smart Filter (Deduplicator)
+        
+        # 2. Phase 2: Smart Filter
         dedup_raw_text = "Skipped"
         dedup_input_payload = None
         unique_violations = []
         
         if clean_input_violations:
-            # Extract backpack for context
             backpack_context = "Global Context Not Found"
             try:
                 data = json.loads(content_json)
@@ -100,13 +100,14 @@ class AuditOrchestrator:
                 backpack_context
             )
             
-            # Sanity Check: If filter removed EVERYTHING from a large list, fallback to raw
+            # Sanity Check: If filter deleted everything from a large list, fallback/warn
             if len(clean_input_violations) > 3 and len(unique_violations) == 0:
-                safe_log("Orchestrator: Suspicious 0 result from Filter. Falling back to raw inputs.", "WARNING")
-                unique_violations = clean_input_violations
-                dedup_raw_text += "\n\n[SYSTEM: FALLBACK TRIGGERED due to 0 results]"
+                safe_log("Orchestrator: Filter removed all violations. Checking logic.", "WARNING")
+                # We don't force fallback here anymore (trusting the new prompt), 
+                # but we log it clearly.
+                dedup_raw_text += "\n\n[SYSTEM: ALL VIOLATIONS FILTERED AS SAFE]"
         else:
-            dedup_raw_text = "Skipped (No violations found)"
+            dedup_raw_text = "Skipped (No violations found in Phase 1)"
 
         # --- SANITATION 2: Filter Output ---
         final_violations = self._sanitize_violations(unique_violations)
@@ -114,12 +115,12 @@ class AuditOrchestrator:
         # 3. Report
         report_md = self._generate_markdown(final_violations, successful_audits)
         
-        # 4. Debug Package
+        # 4. Debug Info
         debug_package = None
         if debug_mode:
             debug_package = {
                 "audits": raw_debug_data,
-                "deduplicator_input": dedup_input_payload,
+                "deduplicator_input": dedup_input_payload, # Full trace
                 "deduplicator_raw": dedup_raw_text,
                 "input_violation_count": len(all_violations),
                 "clean_input_count": len(clean_input_violations),
@@ -145,7 +146,7 @@ class AuditOrchestrator:
             "task": "filter_and_deduplicate",
             "context_backpack": context_backpack,
             "instructions": [
-                "1. APPLY RISK ASSESSMENT: Do not delete violations unless they are clearly harmless opinions.",
+                "1. APPLY 'REPORTER vs PROMOTER' LOGIC: Only delete violations that are honest critiques or harmless opinions.",
                 "2. MERGE DUPLICATES: Combine similar issues.",
                 "3. PRESERVE TRANSLATIONS: Do not delete 'translation' fields."
             ],
@@ -176,11 +177,8 @@ class AuditOrchestrator:
         for v in violations:
             v_type = v.violation_type.lower().strip() if v.violation_type else ""
             if not v_type or any(term in v_type for term in blacklist): continue
-            
-            # Also filter if problematic_text is missing or N/A
             v_text = v.problematic_text.lower() if v.problematic_text else ""
             if v_text in ["n/a", "none", "no text", "", " "]: continue
-            
             cleaned.append(v)
         return cleaned
 
@@ -209,9 +207,7 @@ class AuditOrchestrator:
         return unique_list
 
     def _generate_markdown(self, violations: List[Violation], audit_count: int) -> str:
-        # --- FIX: Ensure datetime is used correctly ---
         date_str = datetime.now().strftime("%Y-%m-%d")
-        
         md = [f"# YMYL Compliance Report\n**Date:** {date_str}\n**Audits Performed:** {audit_count}\n---"]
         if not violations:
             md.append("\n✅ **No violations found.**")
@@ -222,7 +218,6 @@ class AuditOrchestrator:
             if v.severity.value == "critical": emoji = "🔴"
             elif v.severity.value == "high": emoji = "🟠"
             elif v.severity.value == "low": emoji = "🔵"
-            
             md.append(f"### {count}. {emoji} {v.violation_type}")
             md.append(f"**Severity:** {v.severity.value.title()}")
             md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
