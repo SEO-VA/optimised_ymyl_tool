@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Response Parser Module
+Response Parser Module - Robust V3
 Handles the conversion of raw AI text strings into structured Python objects.
-Includes "Healing" logic to fix common JSON errors (unescaped quotes) warned about in the Prompt.
+Updated: Fixes 'NoneType' crash by safely handling null values from AI.
 """
 
 import json
@@ -21,19 +21,19 @@ class ResponseParser:
     def parse_to_violations(raw_text: str) -> List[Violation]:
         """
         Main entry point: Converts raw AI text string -> List of Violation objects.
-        Returns empty list if parsing fails (logs error).
         """
         cleaned_json = ResponseParser._extract_json_structure(raw_text)
         
         if not cleaned_json:
-            safe_log("Parser: Could not find JSON structure in response", "ERROR")
+            preview = raw_text[:500].replace('\n', ' ')
+            safe_log(f"Parser: Could not find JSON structure. Response start: {preview}...", "ERROR")
             return []
 
         try:
             # 1. Try standard parse
             data = json.loads(cleaned_json)
         except json.JSONDecodeError:
-            # 2. If failed, try "Healing" the JSON (fixing unescaped quotes)
+            # 2. If failed, try "Healing" the JSON
             safe_log("Parser: JSON Error, attempting heuristic fix...", "WARNING")
             healed_json = ResponseParser._heuristic_fix_json(cleaned_json)
             try:
@@ -47,52 +47,30 @@ class ResponseParser:
 
     @staticmethod
     def _extract_json_structure(text: str) -> Optional[str]:
-        """
-        Finds the JSON list/array inside the text, stripping Markdown.
-        """
-        if not text: 
-            return None
-            
+        if not text: return None
         text = text.strip()
         
-        # Strategy 1: Look for code blocks ```json ... ```
+        # Strategy 1: Code blocks
         code_block = re.search(r'```(?:json)?\s*(\[[\s\S]*?\])\s*```', text)
-        if code_block:
-            return code_block.group(1)
+        if code_block: return code_block.group(1)
 
-        # Strategy 2: Look for the outermost square brackets [...]
-        # This is a simple regex, might need robustness for nested brackets but usually suffices for this prompt
-        bracket_match = re.search(r'^\s*(\[[\s\S]*\])\s*$', text)
-        if bracket_match:
-            return bracket_match.group(1)
-            
-        # Fallback: Just try the raw text if it looks like a list
-        if text.startswith('[') and text.endswith(']'):
-            return text
+        # Strategy 2: Greedy Substring (Find first [ and last ])
+        start_index = text.find('[')
+        end_index = text.rfind(']')
+        
+        if start_index != -1 and end_index != -1 and end_index > start_index:
+            return text[start_index : end_index + 1]
             
         return None
 
     @staticmethod
     def _heuristic_fix_json(bad_json: str) -> str:
-        """
-        Attempts to fix common 'URGENT_JSON_ESCAPING' errors mentioned in prompt.
-        Example: "problematic_text": "I'd like" -> "problematic_text": "I\'d like"
-        """
-        # Fix 1: Escape unescaped double quotes inside string values is very hard via regex safely.
-        # We focus on the prompt's specific warning: Apostrophes in contractions (I'd, It's)
-        # This regex looks for ' (word char)' following a word char, capturing common contractions
-        # Note: This is a 'best effort' heuristic.
-        
         # Basic fix: common unescaped control characters
         fixed = bad_json.replace('\t', '    ').replace('\r', '')
-        
         return fixed
 
     @staticmethod
     def _map_data_to_violations(data: Any) -> List[Violation]:
-        """
-        Maps raw JSON data (List of sections) to flat list of Violation objects.
-        """
         violations: List[Violation] = []
         
         if not isinstance(data, list):
@@ -100,38 +78,38 @@ class ResponseParser:
             return []
 
         for section in data:
-            # Your prompt outputs sections containing a 'violations' list
-            # Schema: { "big_chunk_index": 1, "content_name": "...", "violations": [...] }
-            
-            if not isinstance(section, dict): 
-                continue
+            if not isinstance(section, dict): continue
                 
             raw_violations = section.get('violations')
             
-            # Prompt says "violations": "no violation found" (string) OR list
+            # Handle "no violation found" string case
             if isinstance(raw_violations, str) or not raw_violations:
-                continue # Skip "no violation found"
+                continue 
                 
             if isinstance(raw_violations, list):
                 for v_dict in raw_violations:
-                    if not isinstance(v_dict, dict): 
-                        continue
+                    if not isinstance(v_dict, dict): continue
                         
                     try:
-                        # Strict mapping to our Model
+                        # --- SAFE MAPPING (Fixes 'NoneType' error) ---
+                        # We use 'or' to default to a string if the value is None
+                        
+                        sev_val = v_dict.get('severity')
+                        if sev_val is None: sev_val = 'medium' # Default safety
+                        
                         violation = Violation(
-                            problematic_text=v_dict.get('problematic_text', 'N/A'),
-                            violation_type=v_dict.get('violation_type', 'Unknown'),
-                            explanation=v_dict.get('explanation', 'No explanation'),
-                            guideline_section=str(v_dict.get('guideline_section', 'N/A')),
-                            page_number=v_dict.get('page_number', 0),
-                            severity=Severity.from_string(v_dict.get('severity', 'medium')),
-                            suggested_rewrite=v_dict.get('suggested_rewrite', 'N/A'),
+                            problematic_text=v_dict.get('problematic_text') or 'N/A',
+                            violation_type=v_dict.get('violation_type') or 'Unknown',
+                            explanation=v_dict.get('explanation') or 'No explanation',
+                            guideline_section=str(v_dict.get('guideline_section') or 'N/A'),
+                            page_number=v_dict.get('page_number') or 0,
+                            severity=Severity.from_string(sev_val),
+                            suggested_rewrite=v_dict.get('suggested_rewrite') or 'N/A',
                             
                             # Optional Multilingual fields
                             translation=v_dict.get('translation'),
                             rewrite_translation=v_dict.get('rewrite_translation'),
-                            chunk_language=v_dict.get('chunk_language', 'English')
+                            chunk_language=v_dict.get('chunk_language') or 'English'
                         )
                         violations.append(violation)
                     except Exception as e:
