@@ -288,5 +288,14 @@ class HTMLContentExtractor:
         return json.dumps({"big_chunks": self.big_chunks}, indent=2, ensure_ascii=False)
 
 def extract_html_content(html: str, casino_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Smart Switch: Detects if content is a Google Doc Export or a Web Scrape.
+    """
+    # Detection Logic: Google Docs usually have this specific class in the body
+    if 'doc-content' in html or 'google-doc' in html or 'c1' in html[:500] and 'c2' in html[:500]:
+        safe_log("Extractor: Detected Google Doc HTML format. Switching to GoogleDocExtractor.")
+        return extract_google_doc_content(html)
+    
+    # Default to the Web Extractor (Surgical/Generic)
     extractor = HTMLContentExtractor()
     return extractor.extract_content(html, casino_mode)
