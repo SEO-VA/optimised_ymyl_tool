@@ -2,24 +2,24 @@
 """
 Audit Orchestrator Module
 The Strategy Layer. Coordinates the "Strict Audit -> Smart Filter" Workflow.
-Updated: Verified 'import re' to fix NameError.
+Updated: Includes 'import re' to fix NameError during translation restoration.
 """
 
 import asyncio
 import json
 import time
-import re
+import re  # <--- CRITICAL FIX
 import streamlit as st
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
 
-from core.models import AnalysisResult, Violation
+from core.models import Violation
 from core.service import openai_service
 from core.parser import ResponseParser
 from utils.helpers import safe_log
 
 # CONTROL CONCURRENCY
-MAX_CONCURRENT_AUDITS = 5
+MAX_CONCURRENT_AUDITS = 3
 
 class AuditOrchestrator:
     
@@ -48,10 +48,12 @@ class AuditOrchestrator:
                 return await openai_service.get_response_async(
                     content=content_json,
                     assistant_id=target_assistant_id,
-                    task_name=f"Strict Auditor #{index+1}"
+                    task_name=f"Strict Auditor #{index+1}",
+                    json_mode=True
                 )
 
-        raw_results = await asyncio.gather(*[_run_audit(i) for i in range(audit_count)])
+        tasks = [_run_with_semaphore(i) for i in range(audit_count)]
+        raw_results = await asyncio.gather(*tasks)
         
         all_violations = []
         successful_audits = 0
@@ -61,7 +63,6 @@ class AuditOrchestrator:
             audit_id = i + 1
             if success and text:
                 violations = ResponseParser.parse_to_violations(text)
-                # Accept empty list as valid success
                 if isinstance(violations, list):
                     successful_audits += 1
                     for v in violations:
@@ -82,13 +83,12 @@ class AuditOrchestrator:
 
         # --- SANITATION 1: Filter Input ---
         clean_input_violations = self._sanitize_violations(all_violations)
-        
-        # 2. Phase 2: The Smart Filter (Deduplicator)
+
+        # 2. Phase 2: Smart Filter
         dedup_raw_text = "Skipped"
         dedup_input_payload = None
         unique_violations = []
         
-        # We always run the filter if there is input, to apply business logic
         if clean_input_violations:
             backpack_context = "Global Context Not Found"
             try:
@@ -102,13 +102,13 @@ class AuditOrchestrator:
                 backpack_context
             )
             
-            # Sanity Check: If filter deleted everything from a large list, warn but trust the logic (mostly)
+            # Sanity Check
             if len(clean_input_violations) > 3 and len(unique_violations) == 0:
                 safe_log("Orchestrator: Filter removed all violations. Checking logic.", "WARNING")
                 dedup_raw_text += "\n\n[SYSTEM: ALL VIOLATIONS FILTERED AS SAFE]"
         else:
             dedup_raw_text = "Skipped (No violations found in Phase 1)"
-        
+
         # --- SANITATION 2: Filter Output ---
         final_violations = self._sanitize_violations(unique_violations)
         
@@ -155,17 +155,18 @@ class AuditOrchestrator:
         
         payload_json = json.dumps(payload, indent=2)
         
+        # JSON Mode enabled
         success, text, error = await openai_service.get_response_async(
             content=payload_json,
             assistant_id=self.settings['deduplicator_assistant_id'],
             task_name="Smart Filter",
-            timeout_seconds=400
+            timeout_seconds=400,
+            json_mode=True
         )
         
         final_list = []
         if success and text:
             deduped_list = ResponseParser.parse_to_violations(text)
-            # Restore translations safety net
             final_list = self._restore_translations(deduped_list, violations)
             return final_list, text, payload_json
             
@@ -178,17 +179,14 @@ class AuditOrchestrator:
         for v in violations:
             v_type = v.violation_type.lower().strip() if v.violation_type else ""
             if not v_type or any(term in v_type for term in blacklist): continue
-            
-            # Filter empty text
             v_text = v.problematic_text.lower() if v.problematic_text else ""
             if v_text in ["n/a", "none", "no text", "", " "]: continue
-            
             cleaned.append(v)
         return cleaned
 
     def _normalize_key(self, text: str) -> str:
         if not text: return ""
-        # THIS IS WHERE THE ERROR LIKELY OCCURRED (re.sub)
+        # Fix: uses re.sub which requires 'import re'
         return re.sub(r'[\W_]+', '', text.lower())[:100]
 
     def _restore_translations(self, unique_list: List[Violation], original_list: List[Violation]) -> List[Violation]:
@@ -223,7 +221,6 @@ class AuditOrchestrator:
             if v.severity.value == "critical": emoji = "🔴"
             elif v.severity.value == "high": emoji = "🟠"
             elif v.severity.value == "low": emoji = "🔵"
-            
             md.append(f"### {count}. {emoji} {v.violation_type}")
             md.append(f"**Severity:** {v.severity.value.title()}")
             md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
