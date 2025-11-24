@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Admin Layout
-Updated: Adds "Input Payload" tab to Debug Inspector.
+Advanced interface with Debug Mode, Test Mode, Data Preview, and RAW OUTPUT INSPECTOR.
 """
 
 import streamlit as st
@@ -130,11 +130,11 @@ class AdminLayout:
                     st.subheader("🔍 AI Raw Output Inspector")
                     d_info = result['debug_info']
                     
-                    # --- NEW TAB STRUCTURE ---
+                    # --- NEW: Input Tab ---
                     tab0, tab1, tab2, tab3 = st.tabs(["0️⃣ Input to Deduplicator", "1️⃣ Deduplicator Output", "2️⃣ Audits", "3️⃣ Final JSON"])
                     
                     with tab0:
-                        st.caption("This is the exact JSON sent to the Compliance Editor (Agent 2). Check if violations are missing here.")
+                        st.caption("This is the exact JSON sent to Agent 2. Check if violations were filtered here.")
                         st.code(d_info.get('deduplicator_input', 'N/A'), language='json')
 
                     with tab1:
