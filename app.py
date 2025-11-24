@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
 YMYL Audit Tool - Main Application Entry Point
-Clean router that handles Authentication and Layout selection.
+Updated: Removed Sidebar controls (moved to Layouts).
 """
 
 import streamlit as st
 from core.auth import check_authentication, logout, get_current_user
 from core.state import state_manager
-from utils.feature_registry import FeatureRegistry
 from ui.user_layout import UserLayout
 from ui.admin_layout import AdminLayout
 
@@ -15,7 +14,7 @@ from ui.admin_layout import AdminLayout
 st.set_page_config(
     page_title="YMYL Audit Tool",
     page_icon="🔍",
-    layout="centered"
+    layout="wide" # Using wide for better visibility of logs
 )
 
 def main():
@@ -31,37 +30,22 @@ def main():
     # 2. Global Header & Navigation
     _render_header(current_user)
     
-    # 3. Global Controls (Sidebar)
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Global Casino Mode (applies to all features)
-        # We store this in a standard session key for easy access by layouts
-        casino_mode = st.checkbox(
-            "🎰 Casino Review Mode",
-            help="Use specialized AI assistant for gambling content analysis",
-            key="global_casino_mode"
-        )
-        
-        # Emergency Stop (Monitored by Processor)
-        if state_manager.is_processing:
-            st.error("⚠️ Analysis Running")
-            if st.button("🛑 EMERGENCY STOP", type="primary"):
-                state_manager.trigger_stop()
-                st.rerun()
+    # 3. Layout Routing
+    try:
+        # Feature Selection (Now in Main Area for visibility)
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.markdown("### 🎯 Select Task")
+            analysis_type = st.radio(
+                "Choose Analysis Type:",
+                ["🌐 URL Analysis", "📄 HTML Analysis"],
+                label_visibility="collapsed",
+                key="main_analysis_type",
+                disabled=state_manager.is_processing
+            )
         
         st.divider()
-        
-        # Feature Selection
-        analysis_type = st.radio(
-            "Choose Analysis:",
-            ["🌐 URL Analysis", "📄 HTML Analysis"],
-            key="main_analysis_type",
-            disabled=state_manager.is_processing
-        )
 
-    # 4. Routing to Layouts
-    try:
         # Map selection to internal feature ID
         feature_key = "url_analysis" if "URL" in analysis_type else "html_analysis"
         
@@ -70,7 +54,7 @@ def main():
             layout.render(feature_key)
         else:
             layout = UserLayout()
-            layout.render(feature_key, casino_mode)
+            layout.render(feature_key)
             
     except Exception as e:
         st.error(f"❌ Application Error: {str(e)}")
@@ -79,7 +63,7 @@ def main():
 
 def _render_header(username: str):
     """Renders the consistent top header"""
-    col1, col2 = st.columns([4, 1])
+    col1, col2 = st.columns([6, 1])
     with col1:
         st.title("🔍 YMYL Audit Tool")
         st.caption(f"Logged in as: **{username}**")
