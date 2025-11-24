@@ -10,6 +10,7 @@ import re
 from bs4 import BeautifulSoup, Comment
 from typing import Tuple, Optional, List, Set, Dict
 from utils.helpers import safe_log, clean_text
+from core.google_doc_extractor import extract_google_doc_content
 
 class HTMLContentExtractor:
     
