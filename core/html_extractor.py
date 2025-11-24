@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V4
-Fixes:
-1. Stopped deleting <header> tags (which contained the H1/Lead).
-2. Splits H1, Subtitle, Lead, and Summary into separate Big Chunks.
+HTML Content Extractor - V5 (Global Context Backpack)
+Feature: Creates a 'Chunk 0' containing global safety context (Licenses, Warnings, Restrictions)
+so the AI doesn't 'forget' them when analyzing specific sections.
 """
 
 import json
@@ -17,36 +16,37 @@ class HTMLContentExtractor:
     def __init__(self):
         self.processed_elements: Set[str] = set()
         self.big_chunks = []
-        self.chunk_index = 1
+        self.chunk_index = 1 # We start at 1, but Backpack will be 0
     
     def extract_content(self, html_content: str, casino_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
         try:
-            # Pre-clean: Remove "email protected" obfuscation from Cloudflare
+            # Pre-clean
             html_content = re.sub(r'\[email&#160;protected\]', 'EMAIL_HIDDEN', html_content)
-            
             soup = BeautifulSoup(html_content, 'html.parser')
             self._preprocess_soup(soup)
             
-            # Reset state
             self.processed_elements.clear()
             self.big_chunks = []
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction")
+                safe_log("Extractor: Running Context-Aware Casino Extraction")
                 
-                # 1. Extract Metadata (Split into separate chunks)
-                self._extract_metadata_split(soup)
+                # --- STEP 0: THE BACKPACK (New) ---
+                # Grab global context (Footer warnings, Intro restrictions) before we delete anything
+                self._extract_global_backpack(soup)
+
+                # 1. Extract Metadata
+                self._extract_metadata_chunk(soup)
                 
-                # 2. Extract FAQ (Saved for end)
+                # 2. Extract FAQ
                 faq_chunk = self._extract_faq_chunk(soup)
                 
-                # 3. EXECUTE KILL LIST (Remove Widgets)
+                # 3. Clean Noise
                 self._remove_casino_widgets(soup)
                 
                 # 4. Main Content Scan
                 main_wrapper = soup.find('section', class_='wrapper')
-                
                 if main_wrapper:
                     self._extract_with_direct_chunking(main_wrapper)
                 else:
@@ -54,14 +54,13 @@ class HTMLContentExtractor:
                     body = soup.find('body') or soup
                     self._extract_with_direct_chunking(body)
                 
-                # 5. Append FAQ at the end
+                # 5. Append FAQ
                 if faq_chunk:
                     faq_chunk["big_chunk_index"] = self.chunk_index
                     self.big_chunks.append(faq_chunk)
                     self.chunk_index += 1
                     
             else:
-                # Generic Mode
                 safe_log("Extractor: Running Generic Extraction")
                 body = soup.find('body') or soup
                 self._extract_with_direct_chunking(body)
@@ -72,143 +71,147 @@ class HTMLContentExtractor:
             return False, None, f"HTML parsing error: {str(e)}"
 
     def _preprocess_soup(self, soup: BeautifulSoup):
-        """Remove invisible elements."""
-        # FIX: Removed 'header' from this list because your H1 is inside a <header> tag!
-        for tag in soup(['script', 'style', 'nav', 'footer', 'aside', 'noscript', 'iframe', 'svg', 'button']):
+        for tag in soup(['script', 'style', 'nav', 'aside', 'noscript', 'iframe', 'svg', 'button']):
             tag.decompose()
         for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
             comment.extract()
 
-    def _remove_casino_widgets(self, soup: BeautifulSoup):
-        """The 'Kill List': Removes non-editorial widgets."""
-        noise_patterns = [
-            re.compile(r'^blockCasinoInfo'),        # Top sticky header
-            re.compile(r'^blockCasinoRating'),      # The "247bet Rating" widget
-            re.compile(r'^blockCasinoPopularSlots'),# The "Most popular slots" widget
-            re.compile(r'^blockCasinoDetails'),     # The "Details" table
-            re.compile(r'^templateAuthor'),         # Author bio
-            re.compile(r'^blockCasinoInfoSticky'),  # Bottom sticky footer
-            re.compile(r'^templateFooter')          # Main Footer
-        ]
+    def _extract_global_backpack(self, soup: BeautifulSoup):
+        """
+        Scans the entire page for 'Global Context' signals (Licenses, Warnings, Restrictions).
+        Creates a 'Chunk 0' that the AI MUST read first.
+        """
+        context_items = []
         
+        # 1. Scan for LICENSE info (usually in footer)
+        # We look for common regulator keywords
+        text_content = soup.get_text(" ", strip=True)
+        license_patterns = [
+            r'UKGC', r'Gambling Commission', r'Malta Gaming Authority', r'MGA/', 
+            r'Curacao', r'Licen[cs]e', r'Regulated by'
+        ]
+        for pattern in license_patterns:
+            # Find the sentence containing this keyword
+            matches = re.findall(r'([^.]*?' + pattern + r'[^.]*\.)', text_content, re.IGNORECASE)
+            for match in matches[:2]: # Keep it brief
+                if len(match) < 300:
+                    context_items.append(f"LICENSE_CONTEXT: {clean_text(match)}")
+
+        # 2. Scan for RESTRICTIONS (Intro/Terms)
+        # Look for "Not available", "Restricted", "Players from"
+        restriction_patterns = [r'not available in', r'restricted countr', r'players from']
+        for pattern in restriction_patterns:
+            matches = re.findall(r'([^.]*?' + pattern + r'[^.]*\.)', text_content, re.IGNORECASE)
+            for match in matches[:3]:
+                context_items.append(f"RESTRICTION_CONTEXT: {clean_text(match)}")
+
+        # 3. Scan for WARNINGS (18+, GambleAware)
+        # We look for specific safety markers
+        if "18+" in text_content: context_items.append("SAFETY_MARKER: '18+' found on page.")
+        if "GambleAware" in text_content or "GamCare" in text_content: context_items.append("SAFETY_MARKER: RG Help Links found on page.")
+        if "Play Responsibly" in text_content: context_items.append("SAFETY_MARKER: 'Play Responsibly' msg found.")
+
+        # 4. Grab Intro Text High-Level (redundant to metadata but good for context)
+        intro = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
+        if intro:
+            context_items.append(f"PAGE_INTRO_SUMMARY: {clean_text(intro.get_text())[:500]}...")
+
+        # CREATE THE BACKPACK CHUNK
+        if context_items:
+            # Remove duplicates
+            context_items = list(set(context_items))
+            self.big_chunks.append({
+                "big_chunk_index": 0,  # Special Index 0
+                "content_name": "GLOBAL PAGE CONTEXT (Read First)",
+                "small_chunks": context_items
+            })
+            # Note: We do NOT increment chunk_index here, so the first real content is Chunk 1
+
+    def _remove_casino_widgets(self, soup: BeautifulSoup):
+        noise_patterns = [
+            re.compile(r'^blockCasinoInfo'),
+            re.compile(r'^blockCasinoRating'),
+            re.compile(r'^blockCasinoPopularSlots'),
+            re.compile(r'^blockCasinoDetails'),
+            re.compile(r'^templateAuthor'),
+            re.compile(r'^blockCasinoInfoSticky'),
+            re.compile(r'^templateFooter') 
+        ]
         for pattern in noise_patterns:
             for element in soup.find_all(attrs={'data-qa': pattern}):
                 element.decompose()
 
-    def _extract_metadata_split(self, soup: BeautifulSoup):
-        """
-        Extracts H1, Subtitle, Lead, and Summary.
-        Creates a SEPARATE chunk for each one.
-        """
-        # INTRO SECTION
+    def _extract_metadata_chunk(self, soup: BeautifulSoup):
+        metadata_items = []
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
         search_area = intro_container if intro_container else soup
         
-        # 1. H1 Chunk
         h1 = search_area.find('h1')
         if h1:
-            text = clean_text(h1.get_text())
-            if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Page Title",
-                    "small_chunks": [f"H1: {text}"]
-                })
-                self.chunk_index += 1
+            metadata_items.append(f"H1: {clean_text(h1.get_text())}")
             h1.decompose()
 
-        # 2. Subtitle Chunk
         subtitle = search_area.select_one('.sub-title')
         if subtitle:
-            text = clean_text(subtitle.get_text())
-            if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Subtitle",
-                    "small_chunks": [f"SUBTITLE: {text}"]
-                })
-                self.chunk_index += 1
+            metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
             subtitle.decompose()
 
-        # 3. Lead Chunk
         lead = search_area.select_one('.lead')
         if lead:
-            text = clean_text(lead.get_text())
-            if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Lead Text",
-                    "small_chunks": [f"LEAD: {text}"]
-                })
-                self.chunk_index += 1
+            metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
             lead.decompose()
 
-        # 4. Summary Chunk
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
             h2 = summary_block.find('h2')
-            if h2: h2.decompose() # Remove title
-            
+            if h2: h2.decompose()
             text = clean_text(summary_block.get_text())
-            if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Summary",
-                    "small_chunks": [f"SUMMARY: {text}"]
-                })
-                self.chunk_index += 1
+            if text: metadata_items.append(f"SUMMARY: {text}")
             summary_block.decompose()
 
+        if metadata_items:
+            self.big_chunks.append({
+                "big_chunk_index": self.chunk_index,
+                "content_name": "Page Metadata & Summary",
+                "small_chunks": metadata_items
+            })
+            self.chunk_index += 1
+
     def _extract_faq_chunk(self, soup: BeautifulSoup) -> Optional[Dict]:
-        """Extracts FAQs."""
         faq_section = soup.find(attrs={'data-qa': 'templateFAQ'})
         if not faq_section: return None
-            
         faq_items = []
         questions = faq_section.find_all(attrs={'itemtype': re.compile(r'schema\.org/Question')})
-        
-        if not questions:
-            questions = faq_section.find_all(class_='card')
+        if not questions: questions = faq_section.find_all(class_='card')
 
         for q in questions:
-            q_text = ""
-            q_el = q.find(attrs={'itemprop': 'name'})
-            if not q_el: q_el = q.find('button')
-            if q_el: q_text = clean_text(q_el.get_text())
+            q_el = q.find(attrs={'itemprop': 'name'}) or q.find('button')
+            q_text = clean_text(q_el.get_text()) if q_el else ""
             
-            a_text = ""
             a_container = q.find(attrs={'itemprop': 'acceptedAnswer'})
             if a_container:
-                a_el = a_container.find(attrs={'itemprop': 'text'})
-                if not a_el: a_el = a_container 
+                a_el = a_container.find(attrs={'itemprop': 'text'}) or a_container
                 a_text = clean_text(a_el.get_text())
             else:
                 collapse = q.find(class_='collapse')
-                if collapse: a_text = clean_text(collapse.get_text())
+                a_text = clean_text(collapse.get_text()) if collapse else ""
 
             if q_text and a_text:
                 faq_items.append(f"FAQ_Q: {q_text} // FAQ_A: {a_text}")
         
         faq_section.decompose()
-        
         if faq_items:
-            return {
-                "content_name": "Frequently Asked Questions",
-                "small_chunks": faq_items
-            }
+            return {"content_name": "Frequently Asked Questions", "small_chunks": faq_items}
         return None
 
     def _extract_with_direct_chunking(self, container):
-        """Generic H2-based chunking."""
         current_chunk_content = []
         pre_h2_content = []
         current_section_name = "Main Content"
-        
         tags = ['h2', 'h3', 'h4', 'p', 'table', 'ul', 'ol']
         
         for element in container.find_all(tags):
             if self._is_child_of_processed(element): continue
-            
             text = clean_text(element.get_text())
             if not text and element.name != 'table': continue
             
@@ -230,7 +233,6 @@ class HTMLContentExtractor:
                         "small_chunks": pre_h2_content.copy()
                     })
                     self.chunk_index += 1
-                
                 current_chunk_content = [f"H2: {text}"]
                 current_section_name = text
                 self._mark_processed(element)
@@ -249,10 +251,8 @@ class HTMLContentExtractor:
             
             if formatted:
                 self._mark_processed(element)
-                if current_section_name == "Main Content":
-                    pre_h2_content.append(formatted)
-                else:
-                    current_chunk_content.append(formatted)
+                if current_section_name == "Main Content": pre_h2_content.append(formatted)
+                else: current_chunk_content.append(formatted)
 
         if current_chunk_content:
             self.big_chunks.append({
