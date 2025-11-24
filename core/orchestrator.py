@@ -2,7 +2,7 @@
 """
 Audit Orchestrator Module
 The Strategy Layer. Coordinates the "Strict Audit -> Smart Filter" Workflow.
-Updated: Captures 'deduplicator_input_payload' for deep debugging.
+Updated: Fixes 'datetime' NameError and includes Safe Filtering.
 """
 
 import asyncio
@@ -11,13 +11,16 @@ import time
 import re
 import streamlit as st
 from typing import List, Dict, Any, Tuple
+# --- FIX: Explicit Import ---
+from datetime import datetime
+
 from core.models import AnalysisResult, Violation
 from core.service import openai_service
 from core.parser import ResponseParser
 from utils.helpers import safe_log
 
 # CONTROL CONCURRENCY
-MAX_CONCURRENT_AUDITS = 3
+MAX_CONCURRENT_AUDITS = 5
 
 class AuditOrchestrator:
     
@@ -32,30 +35,24 @@ class AuditOrchestrator:
             safe_log("Orchestrator: Missing Assistant IDs in secrets", "CRITICAL")
             raise
 
-    async def run_analysis(self, 
-                         content_json: str, 
-                         casino_mode: bool, 
-                         debug_mode: bool,
-                         audit_count: int = 5) -> Dict[str, Any]:
+    async def run_analysis(self, content_json: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
         start_time = time.time()
         target_assistant_id = self.settings['casino_assistant_id'] if casino_mode else self.settings['regular_assistant_id']
         
-        safe_log(f"Orchestrator: Starting {audit_count} audits...")
+        safe_log(f"Orchestrator: Phase 1 - Strict Audit ({audit_count} agents)")
 
-        # 1. Run Audits
+        # 1. Run Strict Audits
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
-
-        async def _run_with_semaphore(index):
+        async def _run_audit(index):
             async with semaphore:
-                await asyncio.sleep(index * 0.5) 
+                await asyncio.sleep(index * 0.5)
                 return await openai_service.get_response_async(
                     content=content_json,
                     assistant_id=target_assistant_id,
-                    task_name=f"Audit #{index+1}"
+                    task_name=f"Strict Auditor #{index+1}"
                 )
 
-        tasks = [_run_with_semaphore(i) for i in range(audit_count)]
-        raw_results = await asyncio.gather(*tasks)
+        raw_results = await asyncio.gather(*[_run_audit(i) for i in range(audit_count)])
         
         all_violations = []
         successful_audits = 0
@@ -68,17 +65,15 @@ class AuditOrchestrator:
                 if isinstance(violations, list):
                     successful_audits += 1
                     for v in violations:
-                        v.source_audit_id = audit_id
+                        v.source_audit_id = i + 1
                     all_violations.extend(violations)
                 
                 if debug_mode:
                     raw_debug_data.append({
-                        "audit_number": audit_id,
+                        "audit_number": i + 1,
                         "raw_response": text,
                         "parsed_count": len(violations) if violations else 0
                     })
-            else:
-                safe_log(f"Audit #{audit_id} failed: {error}", "WARNING")
 
         if successful_audits == 0:
             return {"success": False, "error": "All audits failed."}
@@ -86,14 +81,13 @@ class AuditOrchestrator:
         # --- SANITATION 1: Filter Input ---
         clean_input_violations = self._sanitize_violations(all_violations)
 
-        # 2. Deduplication / Smart Filter
-        dedup_raw_text = None
-        dedup_input_payload = None # DEBUGGING FIELD
+        # 2. Phase 2: The Smart Filter (Deduplicator)
+        dedup_raw_text = "Skipped"
+        dedup_input_payload = None
         unique_violations = []
         
-        # We always run the filter if there is input, to apply business logic
         if clean_input_violations:
-            # Extract backpack
+            # Extract backpack for context
             backpack_context = "Global Context Not Found"
             try:
                 data = json.loads(content_json)
@@ -105,25 +99,31 @@ class AuditOrchestrator:
                 clean_input_violations, 
                 backpack_context
             )
+            
+            # Sanity Check: If filter removed EVERYTHING from a large list, fallback to raw
+            if len(clean_input_violations) > 3 and len(unique_violations) == 0:
+                safe_log("Orchestrator: Suspicious 0 result from Filter. Falling back to raw inputs.", "WARNING")
+                unique_violations = clean_input_violations
+                dedup_raw_text += "\n\n[SYSTEM: FALLBACK TRIGGERED due to 0 results]"
         else:
             dedup_raw_text = "Skipped (No violations found)"
-        
+
         # --- SANITATION 2: Filter Output ---
         final_violations = self._sanitize_violations(unique_violations)
         
         # 3. Report
         report_md = self._generate_markdown(final_violations, successful_audits)
         
-        # 4. Debug Info
+        # 4. Debug Package
         debug_package = None
         if debug_mode:
             debug_package = {
                 "audits": raw_debug_data,
-                "deduplicator_input": dedup_input_payload, # NEW: See exactly what we sent
+                "deduplicator_input": dedup_input_payload,
                 "deduplicator_raw": dedup_raw_text,
                 "input_violation_count": len(all_violations),
                 "clean_input_count": len(clean_input_violations),
-                "output_violation_count": len(final_violations)
+                "final_count": len(final_violations)
             }
 
         return {
@@ -139,9 +139,6 @@ class AuditOrchestrator:
         }
 
     async def _run_smart_filter(self, violations: List[Violation], context_backpack: str) -> Tuple[List[Violation], str, str]:
-        """
-        Returns: (Filtered List, Raw Output Text, Raw Input Payload)
-        """
         if not violations: return [], "No violations", ""
 
         payload = {
@@ -169,7 +166,7 @@ class AuditOrchestrator:
             deduped_list = ResponseParser.parse_to_violations(text)
             final_list = self._restore_translations(deduped_list, violations)
             return final_list, text, payload_json
-        
+            
         safe_log(f"Smart Filter failed: {error}", "ERROR")
         return violations, f"FAILED: {error}", payload_json
 
@@ -179,6 +176,11 @@ class AuditOrchestrator:
         for v in violations:
             v_type = v.violation_type.lower().strip() if v.violation_type else ""
             if not v_type or any(term in v_type for term in blacklist): continue
+            
+            # Also filter if problematic_text is missing or N/A
+            v_text = v.problematic_text.lower() if v.problematic_text else ""
+            if v_text in ["n/a", "none", "no text", "", " "]: continue
+            
             cleaned.append(v)
         return cleaned
 
@@ -207,7 +209,9 @@ class AuditOrchestrator:
         return unique_list
 
     def _generate_markdown(self, violations: List[Violation], audit_count: int) -> str:
+        # --- FIX: Ensure datetime is used correctly ---
         date_str = datetime.now().strftime("%Y-%m-%d")
+        
         md = [f"# YMYL Compliance Report\n**Date:** {date_str}\n**Audits Performed:** {audit_count}\n---"]
         if not violations:
             md.append("\n✅ **No violations found.**")
@@ -218,6 +222,7 @@ class AuditOrchestrator:
             if v.severity.value == "critical": emoji = "🔴"
             elif v.severity.value == "high": emoji = "🟠"
             elif v.severity.value == "low": emoji = "🔵"
+            
             md.append(f"### {count}. {emoji} {v.violation_type}")
             md.append(f"**Severity:** {v.severity.value.title()}")
             md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
