@@ -2,13 +2,13 @@
 """
 Audit Orchestrator Module
 The Strategy Layer. Coordinates the "Strict Audit -> Smart Filter" Workflow.
-Updated: Includes 'import re' to fix NameError during translation restoration.
+Updated: Fixed NameError (renamed _run_audit to _run_with_semaphore).
 """
 
 import asyncio
 import json
 import time
-import re  # <--- CRITICAL FIX
+import re
 import streamlit as st
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
@@ -42,7 +42,9 @@ class AuditOrchestrator:
 
         # 1. Run Strict Audits
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
-        async def _run_audit(index):
+
+        # --- FIX: Function definition now matches the call below ---
+        async def _run_with_semaphore(index):
             async with semaphore:
                 await asyncio.sleep(index * 0.5)
                 return await openai_service.get_response_async(
@@ -84,7 +86,7 @@ class AuditOrchestrator:
         # --- SANITATION 1: Filter Input ---
         clean_input_violations = self._sanitize_violations(all_violations)
 
-        # 2. Phase 2: Smart Filter
+        # 2. Phase 2: The Smart Filter (Deduplicator)
         dedup_raw_text = "Skipped"
         dedup_input_payload = None
         unique_violations = []
@@ -155,7 +157,6 @@ class AuditOrchestrator:
         
         payload_json = json.dumps(payload, indent=2)
         
-        # JSON Mode enabled
         success, text, error = await openai_service.get_response_async(
             content=payload_json,
             assistant_id=self.settings['deduplicator_assistant_id'],
@@ -186,7 +187,6 @@ class AuditOrchestrator:
 
     def _normalize_key(self, text: str) -> str:
         if not text: return ""
-        # Fix: uses re.sub which requires 'import re'
         return re.sub(r'[\W_]+', '', text.lower())[:100]
 
     def _restore_translations(self, unique_list: List[Violation], original_list: List[Violation]) -> List[Violation]:
