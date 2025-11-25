@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V10 (Targeted Container)
+HTML Content Extractor - Surgical Edition V11 (Strict Classes)
 Updated:
-1. Prioritizes 'data-qa=templateIntro' container for metadata (matches user's HTML).
-2. Keeps robust FAQ detection.
+1. Strict selectors for Metadata: h1, span.sub-title, p.lead.
+2. No fallback scanning/guessing.
 3. No Backpack (Chunk 0).
 """
 
@@ -33,9 +33,9 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V10")
+                safe_log("Extractor: Running Surgical Casino Extraction V11")
                 
-                # 1. Metadata (Targeted Container First)
+                # 1. Metadata (Strict Class Search)
                 self._extract_metadata_chunk(soup)
                 
                 # 2. FAQ (Robust Search)
@@ -101,59 +101,35 @@ class HTMLContentExtractor:
 
     def _extract_metadata_chunk(self, soup: BeautifulSoup):
         """
-        V10 Update: Targets 'data-qa=templateIntro...' first.
-        This guarantees we get the correct Lead/Subtitle associated with the H1.
+        V11 Update: Strict Class Targeting.
+        Looks for H1, .sub-title, and .lead specifically.
+        Prioritizes the 'templateIntro' container if it exists.
         """
         metadata_items = []
         
-        # STRATEGY A: Targeted Container (Best for your site)
-        # Matches data-qa="templateIntroCasinoReviewPage" or similar
+        # 1. Define Search Area (Prefer intro container, fallback to full soup)
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
+        search_area = intro_container if intro_container else soup
         
-        if intro_container:
-            # 1. H1
-            h1 = intro_container.find('h1')
-            if h1:
-                metadata_items.append(f"H1: {clean_text(h1.get_text())}")
-                h1.decompose()
-            
-            # 2. Subtitle (inside container)
-            subtitle = intro_container.find(class_='sub-title') or intro_container.find(class_='subtitle')
-            if subtitle:
-                metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
-                subtitle.decompose()
-                
-            # 3. Lead (inside container)
-            lead = intro_container.find(class_='lead') or intro_container.find(class_='intro')
-            if lead:
-                metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
-                lead.decompose()
-        
-        # STRATEGY B: Global Fallback (If container not found or items missing)
-        # Only runs if Strategy A didn't find the specific items
-        
-        # Check Global H1 if not found
-        if not any("H1:" in item for item in metadata_items):
-            h1 = soup.find('h1')
-            if h1:
-                metadata_items.append(f"H1: {clean_text(h1.get_text())}")
-                h1.decompose() # Important: decompose so it's not read as body text
+        # 2. Extract H1
+        h1 = search_area.find('h1')
+        if h1:
+            metadata_items.append(f"H1: {clean_text(h1.get_text())}")
+            h1.decompose()
 
-        # Check Global Subtitle if not found
-        if not any("SUBTITLE:" in item for item in metadata_items):
-            subtitle = soup.find(class_='sub-title')
-            if subtitle:
-                metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
-                subtitle.decompose()
+        # 3. Extract Subtitle (Strict Class: .sub-title)
+        subtitle = search_area.find('span', class_='sub-title')
+        if subtitle:
+            metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
+            subtitle.decompose()
 
-        # Check Global Lead if not found
-        if not any("LEAD:" in item for item in metadata_items):
-            lead = soup.find(class_='lead')
-            if lead:
-                metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
-                lead.decompose()
+        # 4. Extract Lead (Strict Class: .lead)
+        lead = search_area.find('p', class_='lead')
+        if lead:
+            metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
+            lead.decompose()
 
-        # 4. Summary Block (Legacy check)
+        # 5. Summary Block (Legacy check)
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
             text = clean_text(summary_block.get_text())
