@@ -42,16 +42,20 @@ class AuditOrchestrator:
         # 1. Select Assistant
         target_assistant_id = self.settings['casino_assistant_id'] if casino_mode else self.settings['regular_assistant_id']
         
+        # 2. Prepare Payload (Backpack + Content)
+        # We build the payload ONCE here to extract the backpack context
+        analyzer_payload_json, global_context_dict = self._build_analyzer_payload(content_json)
+        
         safe_log(f"Orchestrator: Starting {audit_count} audits...")
 
-        # 2. Run Parallel Audits
+        # 3. Run Parallel Audits
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
 
         async def _run_audit(index):
             async with semaphore:
                 await asyncio.sleep(index * 0.5) 
                 return await openai_service.get_response_async(
-                    content=content_json,
+                    content=analyzer_payload_json, # Sending the structured JSON bundle
                     assistant_id=target_assistant_id,
                     task_name=f"Audit #{index+1}",
                     json_mode=True
@@ -87,29 +91,21 @@ class AuditOrchestrator:
         if successful_audits == 0:
             return {"success": False, "error": "All audits failed."}
 
-        # 3. Deduplication (Merge)
+        # 4. Deduplication (Merge)
         dedup_raw_text = "Skipped"
         final_violations = []
         
         # Always deduplicate if we have results
         if all_violations:
-            # Extract Backpack (Chunk 0) to give Deduplicator context
-            backpack_context = "Global Context Not Found"
-            try:
-                data = json.loads(content_json)
-                if data.get("big_chunks") and data["big_chunks"][0]["big_chunk_index"] == 0:
-                    backpack_context = json.dumps(data["big_chunks"][0])
-            except: pass
-
             final_violations, dedup_raw_text = await self._run_deduplication(
                 all_violations, 
-                backpack_context
+                global_context_dict # Pass the extracted dictionary directly
             )
         else:
             final_violations = []
             dedup_raw_text = "Skipped (No violations found)"
 
-        # 4. Report
+        # 5. Report
         report_md = self._generate_markdown(final_violations, successful_audits)
         
         debug_package = None
@@ -118,7 +114,8 @@ class AuditOrchestrator:
                 "audits": raw_debug_data,
                 "deduplicator_raw": dedup_raw_text,
                 "input_count": len(all_violations),
-                "final_count": len(final_violations)
+                "final_count": len(final_violations),
+                "extracted_context": global_context_dict
             }
 
         return {
@@ -133,7 +130,52 @@ class AuditOrchestrator:
             "word_bytes": None
         }
 
-    async def _run_deduplication(self, violations: List[Violation], context_backpack: str) -> Tuple[List[Violation], str]:
+    def _build_analyzer_payload(self, content_json: str) -> Tuple[str, Dict]:
+        """
+        Constructs the JSON payload required by the Analyzer Prompt.
+        Extracts metadata for the 'Backpack' and bundles it with the text.
+        Returns: (json_string_payload, context_dict)
+        """
+        h1_text = "Unknown Title"
+        
+        try:
+            data = json.loads(content_json)
+            big_chunks = data.get("big_chunks", [])
+            
+            # Attempt to find H1 in the first few chunks
+            for chunk in big_chunks[:3]:
+                for item in chunk.get("small_chunks", []):
+                    if item.startswith("H1:"):
+                        h1_text = item.replace("H1:", "").strip()
+                        break
+                if h1_text != "Unknown Title": break
+                
+        except Exception:
+            # Fallback if parsing fails, treat raw string as content
+            pass
+
+        # 1. Build the Backpack (Global Context)
+        # Note: We assume compliant site identity/reputation as per "Affiliate Safe Harbor"
+        global_context = {
+            "primary_topic": h1_text,
+            "content_type": "Commercial Review", 
+            "ymyl_category": "Financial/Gambling (Strict Accuracy Required)",
+            "global_assumptions": {
+                "site_identity": "Compliant (Assume About Us exists)",
+                "affiliate_disclosure": "Compliant (Assume footer disclaimer exists)",
+                "site_reputation": "Neutral/Good"
+            }
+        }
+
+        # 2. Bundle into Payload
+        payload = {
+            "global_context": global_context,
+            "chunk_text": content_json 
+        }
+        
+        return json.dumps(payload, indent=2), global_context
+
+    async def _run_deduplication(self, violations: List[Violation], context_backpack: Dict) -> Tuple[List[Violation], str]:
         """
         Simple Merge: Sends violations to the Assistant to remove duplicates.
         """
@@ -141,7 +183,6 @@ class AuditOrchestrator:
 
         # Simple Payload: Data + Context
         payload = {
-            "task": "merge_duplicates",
             "context_backpack": context_backpack, 
             "violations_input": [v.to_dict() for v in violations]
         }
