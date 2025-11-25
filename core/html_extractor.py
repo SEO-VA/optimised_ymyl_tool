@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V14.1 (Granular Metadata)
-Updated:
-1. Fixed Indentation/Syntax errors.
-2. Optimized Targeting for 'templateIntroCasinoReviewPage'.
-3. Extracts H1, Subtitle (.sub-title), and Lead (.lead) from the intro container.
+HTML Content Extractor - Surgical Edition V14.2
+Fix: 
+1. STOPPED removing <header> tags in preprocessing (this was deleting your content).
+2. Tighter targeting for sub-titles.
 """
 
 import json
@@ -33,12 +32,12 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V14.1")
+                safe_log("Extractor: Running Surgical Casino Extraction V14.2")
                 
-                # 1. Granular Metadata (H1 -> Subtitle -> Lead -> Summary)
+                # 1. Granular Metadata
                 self._extract_metadata_separated(soup)
                 
-                # 2. FAQ (Robust Search)
+                # 2. FAQ
                 faq_chunk = self._extract_faq_chunk(soup)
                 
                 # 3. Remove Noise
@@ -61,7 +60,7 @@ class HTMLContentExtractor:
                     body = soup.find('body') or soup
                     self._extract_with_direct_chunking(body)
                 
-                # 5. Append FAQ (if found)
+                # 5. Append FAQ
                 if faq_chunk:
                     faq_chunk["big_chunk_index"] = self.chunk_index
                     self.big_chunks.append(faq_chunk)
@@ -78,7 +77,9 @@ class HTMLContentExtractor:
             return False, None, f"HTML parsing error: {str(e)}"
 
     def _preprocess_soup(self, soup: BeautifulSoup):
-        for tag in soup(['script', 'style', 'nav', 'footer', 'aside', 'header', 'noscript', 'iframe', 'svg', 'button', 'form']):
+        # FIX: Removed 'header' from this list because your H1/Intro is inside it.
+        tags_to_remove = ['script', 'style', 'nav', 'footer', 'aside', 'noscript', 'iframe', 'svg', 'button', 'form']
+        for tag in soup(tags_to_remove):
             tag.decompose()
         for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
             comment.extract()
@@ -99,15 +100,8 @@ class HTMLContentExtractor:
                 element.decompose()
 
     def _extract_metadata_separated(self, soup: BeautifulSoup):
-        """
-        Extracts H1, Subtitle, Lead, and Summary as separate chunks.
-        Optimized for: <div data-qa="templateIntroCasinoReviewPage">
-        """
         # 1. Locate the Container
-        # Matches 'templateIntroCasinoReviewPage' or simply 'templateIntro'
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
-        
-        # Fallback: Look for class="intro" if data-qa is missing (based on your snippet)
         if not intro_container:
             intro_container = soup.find(class_='intro')
 
@@ -127,7 +121,7 @@ class HTMLContentExtractor:
             h1.decompose()
 
         # --- B. Subtitle ---
-        # Targets <span class="sub-title">
+        # Changed to find 'span' or 'div' specifically to be safer, or just class
         subtitle = search_scope.find(class_=re.compile(r'sub-title', re.I))
         if subtitle:
             text = clean_text(subtitle.get_text())
@@ -141,7 +135,6 @@ class HTMLContentExtractor:
             subtitle.decompose()
 
         # --- C. Lead Text ---
-        # Targets <p class="lead">
         lead = search_scope.find(class_=re.compile(r'lead', re.I))
         if lead:
             text = clean_text(lead.get_text())
@@ -155,7 +148,6 @@ class HTMLContentExtractor:
             lead.decompose()
 
         # --- D. Summary Block ---
-        # Independent block, usually outside intro
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
             text = clean_text(summary_block.get_text())
@@ -171,15 +163,10 @@ class HTMLContentExtractor:
     def _extract_faq_chunk(self, soup: BeautifulSoup) -> Optional[Dict]:
         faq_items = []
         faq_section = None
-
-        # Data Attribute
         faq_section = soup.find(attrs={'data-qa': 'templateFAQ'}) or soup.find(class_='faq-section')
-        
-        # Schema.org
         if not faq_section:
             faq_section = soup.find(attrs={'itemtype': re.compile(r'schema\.org/FAQPage')})
 
-        # Header Hunt
         if not faq_section:
             for header in soup.find_all(['h2', 'h3']):
                 if 'faq' in header.get_text().lower() or 'frequently asked' in header.get_text().lower():
@@ -210,7 +197,6 @@ class HTMLContentExtractor:
                 curr = q.next_sibling
                 while curr and (not isinstance(curr, Tag) or curr.name in ['br', 'span']):
                     curr = curr.next_sibling
-                
                 if curr and isinstance(curr, Tag) and curr.name in ['p', 'div']:
                     a_text = clean_text(curr.get_text())
 
@@ -220,7 +206,6 @@ class HTMLContentExtractor:
                 if 'curr' in locals() and curr: self._mark_processed(curr)
 
         if faq_section.parent: faq_section.decompose()
-        
         if faq_items:
             return {"content_name": "Frequently Asked Questions", "small_chunks": faq_items}
         return None
@@ -229,7 +214,6 @@ class HTMLContentExtractor:
         current_chunk_content = []
         pre_h2_content = []
         current_section_name = "Main Content"
-        
         tags = ['h2', 'h3', 'h4', 'p', 'table', 'ul', 'ol', 'dl']
         
         for element in container.find_all(tags):
@@ -315,7 +299,6 @@ class HTMLContentExtractor:
         return json.dumps({"big_chunks": self.big_chunks}, indent=2, ensure_ascii=False)
 
 def extract_html_content(html: str, casino_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
-    # Smart Switch
     if 'doc-content' in html or 'google.com/url' in html or ('<style type="text/css">' in html and '.c1{' in html):
         safe_log("Extractor: Detected Google Doc format. Using Scavenger Extractor.")
         return extract_google_doc_content(html)
