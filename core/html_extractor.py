@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V6 (No Backpack)
+HTML Content Extractor - Surgical Edition V8
+Updated: 
+1. Exact selectors for Subtitle (.sub-title) and Lead (.lead).
+2. Robust FAQ detection (Schema + Header Hunt).
+3. No Backpack (Chunk 0).
 """
 
 import json
 import re
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup, Comment, Tag
 from typing import Tuple, Optional, List, Set, Dict
 from core.google_doc_extractor import extract_google_doc_content
 from utils.helpers import safe_log, clean_text
@@ -19,6 +23,7 @@ class HTMLContentExtractor:
     
     def extract_content(self, html_content: str, casino_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
         try:
+            # Pre-clean
             html_content = re.sub(r'\[email&#160;protected\]', 'EMAIL_HIDDEN', html_content)
             soup = BeautifulSoup(html_content, 'html.parser')
             self._preprocess_soup(soup)
@@ -28,33 +33,35 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction")
+                safe_log("Extractor: Running Surgical Casino Extraction V8")
                 
-                # 1. Metadata
+                # 1. Metadata (Targeted)
                 self._extract_metadata_chunk(soup)
                 
-                # 2. FAQ
+                # 2. FAQ (Robust Search)
                 faq_chunk = self._extract_faq_chunk(soup)
                 
-                # 3. Noise Removal
+                # 3. Remove Noise
                 self._remove_casino_widgets(soup)
                 
-                # 4. Main Body
+                # 4. Main Body Scan
                 main_wrapper = (
                     soup.find(id='review') or 
                     soup.find('section', class_='wrapper') or 
                     soup.find('div', class_='wrapper') or
                     soup.find('main') or 
-                    soup.find('article')
+                    soup.find('article') or
+                    soup.find('div', class_='content')
                 )
                 
                 if main_wrapper:
                     self._extract_with_direct_chunking(main_wrapper)
                 else:
-                    safe_log("Extractor: 'wrapper' missing, scanning cleaned body", "WARNING")
+                    safe_log("Extractor: No main container found, scanning body", "WARNING")
                     body = soup.find('body') or soup
                     self._extract_with_direct_chunking(body)
                 
+                # 5. Append FAQ (if found)
                 if faq_chunk:
                     faq_chunk["big_chunk_index"] = self.chunk_index
                     self.big_chunks.append(faq_chunk)
@@ -71,49 +78,56 @@ class HTMLContentExtractor:
             return False, None, f"HTML parsing error: {str(e)}"
 
     def _preprocess_soup(self, soup: BeautifulSoup):
-        for tag in soup(['script', 'style', 'nav', 'footer', 'aside', 'header', 'noscript', 'iframe', 'svg', 'button']):
+        for tag in soup(['script', 'style', 'nav', 'footer', 'aside', 'header', 'noscript', 'iframe', 'svg', 'button', 'form']):
             tag.decompose()
         for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
             comment.extract()
 
     def _remove_casino_widgets(self, soup: BeautifulSoup):
+        # Aggressively remove sidebar/widget noise
         noise_patterns = [
-            re.compile(r'^blockCasinoInfo'),
-            re.compile(r'^blockCasinoRating'),
-            re.compile(r'^blockCasinoPopularSlots'),
-            re.compile(r'^blockCasinoDetails'),
+            re.compile(r'^blockCasino'),
+            re.compile(r'^widget'),
+            re.compile(r'^sidebar'),
+            re.compile(r'^related'),
             re.compile(r'^templateAuthor'),
-            re.compile(r'^blockCasinoInfoSticky'),
             re.compile(r'^templateFooter') 
         ]
         for pattern in noise_patterns:
             for element in soup.find_all(attrs={'data-qa': pattern}):
                 element.decompose()
+            for element in soup.find_all(class_=pattern):
+                element.decompose()
 
     def _extract_metadata_chunk(self, soup: BeautifulSoup):
+        """
+        Extracts Metadata using strict selectors requested by user.
+        """
         metadata_items = []
-        intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
-        search_area = intro_container if intro_container else soup
         
-        h1 = search_area.find('h1')
+        # 1. H1
+        h1 = soup.find('h1')
         if h1:
             metadata_items.append(f"H1: {clean_text(h1.get_text())}")
             h1.decompose()
 
-        subtitle = search_area.select_one('.sub-title')
+        # 2. Subtitle (Specific Class)
+        # Target: <span class="sub-title d-block">
+        subtitle = soup.find('span', class_='sub-title')
         if subtitle:
             metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
             subtitle.decompose()
 
-        lead = search_area.select_one('.lead')
+        # 3. Lead (Specific Class)
+        # Target: <p class="lead">
+        lead = soup.find('p', class_='lead')
         if lead:
             metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
             lead.decompose()
 
+        # 4. Summary Block (Legacy support, just in case)
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
-            h2 = summary_block.find('h2')
-            if h2: h2.decompose()
             text = clean_text(summary_block.get_text())
             if text: metadata_items.append(f"SUMMARY: {text}")
             summary_block.decompose()
@@ -127,28 +141,69 @@ class HTMLContentExtractor:
             self.chunk_index += 1
 
     def _extract_faq_chunk(self, soup: BeautifulSoup) -> Optional[Dict]:
-        faq_section = soup.find(attrs={'data-qa': 'templateFAQ'})
-        if not faq_section: return None
+        """
+        Multi-strategy FAQ hunting.
+        1. data-qa="templateFAQ"
+        2. Schema.org (itemtype="FAQPage")
+        3. Header Search ("FAQ")
+        """
         faq_items = []
+        faq_section = None
+
+        # Strategy A: Data Attribute (Best)
+        faq_section = soup.find(attrs={'data-qa': 'templateFAQ'}) or soup.find(class_='faq-section')
+        
+        # Strategy B: Schema.org
+        if not faq_section:
+            faq_section = soup.find(attrs={'itemtype': re.compile(r'schema\.org/FAQPage')})
+
+        # Strategy C: Header Hunt (Fallback)
+        # Look for H2/H3 with "FAQ" and grab following content
+        if not faq_section:
+            for header in soup.find_all(['h2', 'h3']):
+                if 'faq' in header.get_text().lower() or 'frequently asked' in header.get_text().lower():
+                    # Create dummy section with siblings until next header
+                    faq_section = soup.new_tag('div')
+                    curr = header.next_sibling
+                    while curr and (not isinstance(curr, Tag) or curr.name not in ['h1', 'h2']):
+                        if isinstance(curr, Tag): faq_section.append(curr.extract())
+                        curr = curr.next_sibling
+                    header.decompose() # Remove the header itself from main flow
+                    break
+
+        if not faq_section: return None
+
+        # Process Content inside found section
         questions = faq_section.find_all(attrs={'itemtype': re.compile(r'schema\.org/Question')})
-        if not questions: questions = faq_section.find_all(class_='card')
+        if not questions: 
+            questions = faq_section.find_all(['h3', 'h4', 'h5', 'strong', 'b'])
 
         for q in questions:
-            q_el = q.find(attrs={'itemprop': 'name'}) or q.find('button')
-            q_text = clean_text(q_el.get_text()) if q_el else ""
+            q_text = clean_text(q.get_text())
+            if not q_text or len(q_text) < 5: continue
             
+            # Find Answer
+            a_text = ""
             a_container = q.find(attrs={'itemprop': 'acceptedAnswer'})
+            
             if a_container:
-                a_el = a_container.find(attrs={'itemprop': 'text'}) or a_container
-                a_text = clean_text(a_el.get_text())
+                a_text = clean_text(a_container.get_text())
             else:
-                collapse = q.find(class_='collapse')
-                a_text = clean_text(collapse.get_text()) if collapse else ""
+                # Sibling Scan
+                curr = q.next_sibling
+                while curr and (not isinstance(curr, Tag) or curr.name in ['br', 'span']):
+                    curr = curr.next_sibling
+                
+                if curr and isinstance(curr, Tag) and curr.name in ['p', 'div']:
+                    a_text = clean_text(curr.get_text())
 
             if q_text and a_text:
                 faq_items.append(f"FAQ_Q: {q_text} // FAQ_A: {a_text}")
+                self._mark_processed(q)
+                if 'curr' in locals() and curr: self._mark_processed(curr)
+
+        if faq_section.parent: faq_section.decompose()
         
-        faq_section.decompose()
         if faq_items:
             return {"content_name": "Frequently Asked Questions", "small_chunks": faq_items}
         return None
@@ -157,10 +212,12 @@ class HTMLContentExtractor:
         current_chunk_content = []
         pre_h2_content = []
         current_section_name = "Main Content"
-        tags = ['h2', 'h3', 'h4', 'p', 'table', 'ul', 'ol']
+        
+        tags = ['h2', 'h3', 'h4', 'p', 'table', 'ul', 'ol', 'dl']
         
         for element in container.find_all(tags):
             if self._is_child_of_processed(element): continue
+            
             text = clean_text(element.get_text())
             if not text and element.name != 'table': continue
             
@@ -187,6 +244,7 @@ class HTMLContentExtractor:
                 self._mark_processed(element)
                 continue
 
+            formatted = None
             if 'warning' in str(element.get('class', [])).lower() or '⚠️' in text:
                 formatted = f"WARNING: {text}"
             elif tag in ['h3', 'h4']: formatted = f"{tag.upper()}: {text}"
@@ -194,6 +252,9 @@ class HTMLContentExtractor:
             elif tag in ['ul', 'ol']:
                 items = [li.get_text(strip=True) for li in element.find_all('li')]
                 if items: formatted = f"LIST: {' // '.join(items)}"
+            elif tag == 'dl':
+                items = [f"{dt.get_text().strip()}: {dd.get_text().strip()}" for dt, dd in zip(element.find_all('dt'), element.find_all('dd'))]
+                if items: formatted = f"DEF_LIST: {' // '.join(items)}"
             elif tag == 'table':
                 rows = [" | ".join([c.get_text(strip=True) for c in r.find_all(['td','th'])]) for r in element.find_all('tr')]
                 if rows: formatted = f"TABLE: {' // '.join(rows)}"
