@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Response Parser Module
-Updated: Supports both Dictionary (New) and List (Old) JSON structures.
+Response Parser Module - Universal Edition
+Handles both List (Old) and Dictionary (New) formats from AI.
 """
 
 import json
@@ -20,19 +20,17 @@ class ResponseParser:
         cleaned_json = ResponseParser._extract_json_structure(raw_text)
         
         if not cleaned_json:
-            preview = raw_text[:500].replace('\n', ' ')
-            safe_log(f"Parser: Could not find JSON structure. Response start: {preview}...", "ERROR")
+            safe_log(f"Parser: Could not find JSON. Text start: {raw_text[:100]}...", "ERROR")
             return []
 
         try:
             data = json.loads(cleaned_json)
         except json.JSONDecodeError:
-            safe_log("Parser: JSON Error, attempting heuristic fix...", "WARNING")
+            safe_log("Parser: JSON Error, attempting repair...", "WARNING")
             healed_json = ResponseParser._heuristic_fix_json(cleaned_json)
             try:
                 data = json.loads(healed_json)
-            except json.JSONDecodeError as e:
-                safe_log(f"Parser: Fatal JSON error after healing: {e}", "ERROR")
+            except json.JSONDecodeError:
                 return []
 
         return ResponseParser._map_data_to_violations(data)
@@ -42,15 +40,13 @@ class ResponseParser:
         if not text: return None
         text = text.strip()
         
-        # Code blocks
+        # 1. Try Code Block
         code_block = re.search(r'```(?:json)?\s*([\{\[][\s\S]*?[\]\}])\s*```', text)
         if code_block: return code_block.group(1)
 
-        # Greedy Substring (Find first { or [ and last } or ])
-        # Updated to support Dict start '{'
+        # 2. Try Greedy Search (Finds largest valid JSON wrapper)
         match = re.search(r'([\{\[])[\s\S]*([\}\]])', text)
-        if match:
-            return match.group(0)
+        if match: return match.group(0)
             
         return None
 
@@ -60,33 +56,31 @@ class ResponseParser:
 
     @staticmethod
     def _map_data_to_violations(data: Any) -> List[Violation]:
-        violations: List[Violation] = []
-        raw_objects = []
+        raw_list = []
 
-        # SCENARIO 1: New Format (Dictionary with "violations" key)
+        # === CRITICAL FIX: Handle Dict vs List ===
         if isinstance(data, dict):
-            raw_objects = data.get('violations', [])
-            
-        # SCENARIO 2: Old Format (List of Chunk Objects)
+            # New Prompt Format: {"violations": [...]}
+            raw_list = data.get('violations', [])
         elif isinstance(data, list):
+            # Old Prompt Format: [{"violation_type":...}, ...]
             for item in data:
                 if isinstance(item, dict):
-                    # Extract from 'violations' key inside chunk
                     if 'violations' in item and isinstance(item['violations'], list):
-                        raw_objects.extend(item['violations'])
-                    # Or if the list is just a flat list of violation objects (Legacy)
-                    elif 'violation_type' in item:
-                        raw_objects.append(item)
+                        raw_list.extend(item['violations']) # Flatten nested chunks
+                    else:
+                        raw_list.append(item) # It's a direct violation object
 
-        if not isinstance(raw_objects, list):
+        if not isinstance(raw_list, list):
             return []
 
-        # Process the flattened list of raw violation dictionaries
-        for v_dict in raw_objects:
+        # Convert to Models
+        final_violations = []
+        for v_dict in raw_list:
             if not isinstance(v_dict, dict): continue
             try:
-                sev_val = v_dict.get('severity')
-                if sev_val is None: sev_val = 'medium'
+                # Safely extract fields with defaults
+                sev_str = v_dict.get('severity', 'medium')
                 
                 violation = Violation(
                     problematic_text=v_dict.get('problematic_text') or 'N/A',
@@ -94,15 +88,16 @@ class ResponseParser:
                     explanation=v_dict.get('explanation') or 'No explanation',
                     guideline_section=str(v_dict.get('guideline_section') or 'N/A'),
                     page_number=v_dict.get('page_number') or 0,
-                    severity=Severity.from_string(sev_val),
+                    severity=Severity.from_string(sev_str),
                     suggested_rewrite=v_dict.get('suggested_rewrite') or 'N/A',
+                    # New Translation Fields
                     translation=v_dict.get('translation'),
                     rewrite_translation=v_dict.get('rewrite_translation'),
-                    chunk_language=v_dict.get('chunk_language') or 'English'
+                    chunk_language=v_dict.get('chunk_language', 'English')
                 )
-                violations.append(violation)
+                final_violations.append(violation)
             except Exception as e:
-                safe_log(f"Parser Error skipping item: {e}", "WARNING")
+                safe_log(f"Parser skipped item due to error: {e}", "WARNING")
                 continue
                 
-        return violations
+        return final_violations
