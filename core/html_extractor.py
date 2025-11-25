@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V13 (Strict Container)
+HTML Content Extractor - Surgical Edition V14 (Granular Metadata)
 Updated:
-1. Metadata extraction STRICTLY targets the 'templateIntro' container.
-2. Extracts H1, .sub-title, and .lead only from within that div.
-3. No "sibling scanning" or guessing.
+1. H1, Subtitle, Lead, and Summary are now extracted as INDIVIDUAL chunks.
+2. Maintains strict container targeting (templateIntro) for accuracy.
+3. No Backpack.
 """
 
 import json
@@ -33,10 +33,10 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V13")
+                safe_log("Extractor: Running Surgical Casino Extraction V14")
                 
-                # 1. Metadata (Strict Container)
-                self._extract_metadata_chunk(soup)
+                # 1. Granular Metadata (H1 -> Subtitle -> Lead -> Summary)
+                self._extract_metadata_separated(soup)
                 
                 # 2. FAQ (Robust Search)
                 faq_chunk = self._extract_faq_chunk(soup)
@@ -84,7 +84,6 @@ class HTMLContentExtractor:
             comment.extract()
 
     def _remove_casino_widgets(self, soup: BeautifulSoup):
-        # Aggressively remove sidebar/widget noise
         noise_patterns = [
             re.compile(r'^blockCasino'),
             re.compile(r'^widget'),
@@ -99,69 +98,82 @@ class HTMLContentExtractor:
             for element in soup.find_all(class_=pattern):
                 element.decompose()
 
-    def _extract_metadata_chunk(self, soup: BeautifulSoup):
+    def _extract_metadata_separated(self, soup: BeautifulSoup):
         """
-        V13 Update: Strict Container Targeting.
-        Looks for 'data-qa=templateIntro...' and extracts H1, Subtitle, Lead ONLY from there.
+        V14 Update: Creates SEPARATE chunks for H1, Subtitle, Lead, and Summary.
+        Strictly targets the 'templateIntro' container first.
         """
-        metadata_items = []
-        
-        # 1. Find the Container
-        # Matches <div data-qa="templateIntroCasinoReviewPage" ...>
+        # 1. Locate the Container
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
+        search_scope = intro_container if intro_container else soup
         
-        if intro_container:
-            # Extract H1
-            h1 = intro_container.find('h1')
-            if h1:
-                metadata_items.append(f"H1: {clean_text(h1.get_text())}")
-                h1.decompose() # Remove from tree so it's not processed again
-            
-            # Extract Subtitle (Strict Class)
-            subtitle = intro_container.find(class_=re.compile(r'sub-title', re.I))
-            if subtitle:
-                metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
-                subtitle.decompose()
-                
-            # Extract Lead (Strict Class)
-            lead = intro_container.find(class_=re.compile(r'lead', re.I))
-            if lead:
-                metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
-                lead.decompose()
-        else:
-            # Fallback: Just get global H1 if container is missing (Safety net)
-            h1 = soup.find('h1')
-            if h1:
-                metadata_items.append(f"H1: {clean_text(h1.get_text())}")
-                h1.decompose()
+        # --- A. Heading (H1) ---
+        h1 = search_scope.find('h1')
+        if h1:
+            text = clean_text(h1.get_text())
+            if text:
+                self.big_chunks.append({
+                    "big_chunk_index": self.chunk_index,
+                    "content_name": "Metadata: Main Heading",
+                    "small_chunks": [f"H1: {text}"]
+                })
+                self.chunk_index += 1
+            h1.decompose()
 
-        # 2. Summary Block (Legacy check, independent of Intro)
+        # --- B. Subtitle ---
+        # Strict class: .sub-title
+        subtitle = search_scope.find(class_=re.compile(r'sub-title', re.I))
+        if subtitle:
+            text = clean_text(subtitle.get_text())
+            if text:
+                self.big_chunks.append({
+                    "big_chunk_index": self.chunk_index,
+                    "content_name": "Metadata: Subtitle",
+                    "small_chunks": [f"SUBTITLE: {text}"]
+                })
+                self.chunk_index += 1
+            subtitle.decompose()
+
+        # --- C. Lead Text ---
+        # Strict class: .lead or .intro
+        lead = search_scope.find(class_=re.compile(r'lead', re.I))
+        if lead:
+            text = clean_text(lead.get_text())
+            if text:
+                self.big_chunks.append({
+                    "big_chunk_index": self.chunk_index,
+                    "content_name": "Metadata: Lead Text",
+                    "small_chunks": [f"LEAD: {text}"]
+                })
+                self.chunk_index += 1
+            lead.decompose()
+
+        # --- D. Summary Block ---
+        # Independent block, usually outside intro
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
             text = clean_text(summary_block.get_text())
-            if text: metadata_items.append(f"SUMMARY: {text}")
+            if text:
+                self.big_chunks.append({
+                    "big_chunk_index": self.chunk_index,
+                    "content_name": "Metadata: Summary",
+                    "small_chunks": [f"SUMMARY: {text}"]
+                })
+                self.chunk_index += 1
             summary_block.decompose()
-
-        if metadata_items:
-            self.big_chunks.append({
-                "big_chunk_index": self.chunk_index,
-                "content_name": "Page Metadata & Summary",
-                "small_chunks": metadata_items
-            })
-            self.chunk_index += 1
 
     def _extract_faq_chunk(self, soup: BeautifulSoup) -> Optional[Dict]:
         faq_items = []
         faq_section = None
 
-        # A. Data Attribute
+        # Data Attribute
         faq_section = soup.find(attrs={'data-qa': 'templateFAQ'}) or soup.find(class_='faq-section')
         
-        # B. Schema.org
+        # Schema.org
         if not faq_section:
             faq_section = soup.find(attrs={'itemtype': re.compile(r'schema\.org/FAQPage')})
 
-        # C. Header Hunt
+        # Header Hunt
         if not faq_section:
             for header in soup.find_all(['h2', 'h3']):
                 if 'faq' in header.get_text().lower() or 'frequently asked' in header.get_text().lower():
@@ -175,7 +187,6 @@ class HTMLContentExtractor:
 
         if not faq_section: return None
 
-        # Extract Questions
         questions = faq_section.find_all(attrs={'itemtype': re.compile(r'schema\.org/Question')})
         if not questions: 
             questions = faq_section.find_all(['h3', 'h4', 'h5', 'strong', 'b'])
