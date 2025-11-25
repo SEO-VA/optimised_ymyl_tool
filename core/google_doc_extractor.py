@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Google Doc Extractor - The "Scavenger Hunt" Edition (V3 - No Backpack)
-Designed for unstructured HTML exports from Google Docs.
+Google Doc Extractor - The "Scavenger Hunt" Edition (No Backpack)
 """
 
 import re
@@ -31,10 +30,10 @@ class GoogleDocExtractor:
             soup = BeautifulSoup(html_content, 'html.parser')
             self._remove_noise(soup)
             
-            # 2. Metadata Hunt (Removes found tags)
+            # 2. Metadata Hunt
             self._hunt_for_metadata(soup)
             
-            # 3. No Backpack step (Removed)
+            # 3. (BACKPACK REMOVED HERE)
 
             # 4. Normalize Structure
             self._normalize_structure(soup)
@@ -223,6 +222,6 @@ class GoogleDocExtractor:
             self.big_chunks = [{"big_chunk_index": 1, "content_name": "Empty", "small_chunks": ["No content found"]}]
         return json.dumps({"big_chunks": self.big_chunks}, indent=2, ensure_ascii=False)
 
-def extract_google_doc_content(html_content: str) -> Tuple[bool, Optional[str], Optional[str]]:
+def extract_google_doc_content(html: str) -> Tuple[bool, Optional[str], Optional[str]]:
     extractor = GoogleDocExtractor()
-    return extractor.extract_content(html_content)
+    return extractor.extract_content(html)
