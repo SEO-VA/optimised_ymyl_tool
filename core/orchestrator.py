@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-Audit Orchestrator Module - Clean & Simple
-Flow:
-1. Send content + backpack to Auditor Assistants (Parallel).
-2. Send raw violations + backpack to Deduplicator Assistant.
-3. Generate Report.
+Audit Orchestrator - Dashboard Prompt Edition
+Uses the prompts saved in OpenAI Assistants Dashboard.
 """
 
 import asyncio
@@ -27,40 +24,41 @@ class AuditOrchestrator:
     
     def __init__(self):
         try:
+            # Load IDs Only
             self.settings = {
                 'regular_assistant_id': st.secrets["regular_assistant_id"],
                 'casino_assistant_id': st.secrets["casino_assistant_id"],
                 'deduplicator_assistant_id': st.secrets["deduplicator_assistant_id"]
             }
-        except KeyError:
-            safe_log("Orchestrator: Missing Assistant IDs in secrets", "CRITICAL")
+        except KeyError as e:
+            safe_log(f"Orchestrator: Missing configuration key {e}", "CRITICAL")
             raise
 
     async def run_analysis(self, content_json: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
         start_time = time.time()
         
-        # 1. Select Assistant
         target_assistant_id = self.settings['casino_assistant_id'] if casino_mode else self.settings['regular_assistant_id']
         
-        # 2. Prepare Payload (Backpack + Content)
-        # We build the payload ONCE here to extract the backpack context
+        # Prepare Payload
         analyzer_payload_json, global_context_dict = self._build_analyzer_payload(content_json)
-
-        safe_log(f"🔍 DEBUG Payload Size: {len(analyzer_payload_json)} chars")
-        safe_log(f"🔍 DEBUG Context: {global_context_dict}")
+        
+        if debug_mode:
+            safe_log(f"🔍 DEBUG Context: {global_context_dict}")
+            safe_log(f"🔍 DEBUG Payload Size: {len(analyzer_payload_json)} chars")
+        
         safe_log(f"Orchestrator: Starting {audit_count} audits...")
 
-        # 3. Run Parallel Audits
+        # Run Parallel Audits
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
 
         async def _run_audit(index):
             async with semaphore:
-                await asyncio.sleep(index * 0.5) 
-                return await openai_service.get_response_async(
-                    content=analyzer_payload_json, # Sending the structured JSON bundle
+                await asyncio.sleep(index * 1.0) 
+                return await openai_service.get_assistant_response(
+                    content=analyzer_payload_json,
                     assistant_id=target_assistant_id,
-                    task_name=f"Audit #{index+1}",
-                    json_mode=True
+                    # removed system_instruction arg
+                    task_name=f"Audit #{index+1}"
                 )
 
         tasks = [_run_audit(i) for i in range(audit_count)]
@@ -74,7 +72,6 @@ class AuditOrchestrator:
             audit_id = i + 1
             if success and text:
                 violations = ResponseParser.parse_to_violations(text)
-                # Accept empty list as valid success
                 if isinstance(violations, list):
                     successful_audits += 1
                     for v in violations:
@@ -93,21 +90,20 @@ class AuditOrchestrator:
         if successful_audits == 0:
             return {"success": False, "error": "All audits failed."}
 
-        # 4. Deduplication (Merge)
+        # Deduplication
         dedup_raw_text = "Skipped"
         final_violations = []
         
-        # Always deduplicate if we have results
         if all_violations:
             final_violations, dedup_raw_text = await self._run_deduplication(
                 all_violations, 
-                global_context_dict # Pass the extracted dictionary directly
+                global_context_dict
             )
         else:
             final_violations = []
             dedup_raw_text = "Skipped (No violations found)"
 
-        # 5. Report
+        # Report
         report_md = self._generate_markdown(final_violations, successful_audits)
         
         debug_package = None
@@ -133,31 +129,19 @@ class AuditOrchestrator:
         }
 
     def _build_analyzer_payload(self, content_json: str) -> Tuple[str, Dict]:
-        """
-        Constructs the JSON payload required by the Analyzer Prompt.
-        Extracts metadata for the 'Backpack' and bundles it with the text.
-        Returns: (json_string_payload, context_dict)
-        """
+        # Same as before
         h1_text = "Unknown Title"
-        
         try:
             data = json.loads(content_json)
             big_chunks = data.get("big_chunks", [])
-            
-            # Attempt to find H1 in the first few chunks
             for chunk in big_chunks[:3]:
                 for item in chunk.get("small_chunks", []):
                     if item.startswith("H1:"):
                         h1_text = item.replace("H1:", "").strip()
                         break
                 if h1_text != "Unknown Title": break
-                
-        except Exception:
-            # Fallback if parsing fails, treat raw string as content
-            pass
+        except: pass
 
-        # 1. Build the Backpack (Global Context)
-        # Note: We assume compliant site identity/reputation as per "Affiliate Safe Harbor"
         global_context = {
             "primary_topic": h1_text,
             "content_type": "Commercial Review", 
@@ -168,46 +152,35 @@ class AuditOrchestrator:
                 "site_reputation": "Neutral/Good"
             }
         }
-
-        # 2. Bundle into Payload
-        payload = {
-            "global_context": global_context,
-            "chunk_text": content_json 
-        }
-        
+        payload = {"global_context": global_context, "chunk_text": content_json}
         return json.dumps(payload, indent=2), global_context
 
     async def _run_deduplication(self, violations: List[Violation], context_backpack: Dict) -> Tuple[List[Violation], str]:
-        """
-        Simple Merge: Sends violations to the Assistant to remove duplicates.
-        """
         if not violations: return [], "No violations"
 
-        # Simple Payload: Data + Context
         payload = {
             "context_backpack": context_backpack, 
             "violations_input": [v.to_dict() for v in violations]
         }
         
-        payload_json = json.dumps(payload, indent=2)
-        
-        success, text, error = await openai_service.get_response_async(
-            content=payload_json,
+        success, text, error = await openai_service.get_assistant_response(
+            content=json.dumps(payload, indent=2),
             assistant_id=self.settings['deduplicator_assistant_id'],
+            # removed system_instruction arg
             task_name="Deduplicator",
-            timeout_seconds=400,
-            json_mode=True
+            timeout_seconds=400
         )
         
         if success and text:
             deduped_list = ResponseParser.parse_to_violations(text)
-            # Safety Net: Restore translations if AI dropped them
             final_list = self._restore_translations(deduped_list, violations)
             return final_list, text
         
         safe_log(f"Deduplication failed: {error}", "ERROR")
         return violations, f"FAILED: {error}"
 
+    # ... Keep helper methods (_normalize_key, _restore_translations, _generate_markdown) ...
+    
     def _normalize_key(self, text: str) -> str:
         if not text: return ""
         return re.sub(r'[\W_]+', '', text.lower())[:100]
