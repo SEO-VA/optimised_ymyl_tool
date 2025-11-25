@@ -30,10 +30,16 @@ class HTMLContentExtractor:
             if casino_mode:
                 safe_log("Extractor: Running Surgical Casino Extraction")
                 
+                # 1. Metadata
                 self._extract_metadata_chunk(soup)
+                
+                # 2. FAQ
                 faq_chunk = self._extract_faq_chunk(soup)
+                
+                # 3. Noise Removal
                 self._remove_casino_widgets(soup)
                 
+                # 4. Main Body
                 main_wrapper = (
                     soup.find(id='review') or 
                     soup.find('section', class_='wrapper') or 
@@ -231,7 +237,7 @@ class HTMLContentExtractor:
         return json.dumps({"big_chunks": self.big_chunks}, indent=2, ensure_ascii=False)
 
 def extract_html_content(html: str, casino_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
-    # Smart Switch: Check for Google Doc signatures
+    # Smart Switch
     if 'doc-content' in html or 'google.com/url' in html or ('<style type="text/css">' in html and '.c1{' in html):
         safe_log("Extractor: Detected Google Doc format. Using Scavenger Extractor.")
         return extract_google_doc_content(html)
