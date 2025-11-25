@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V12 (Sibling Targeting)
+HTML Content Extractor - Surgical Edition V13 (Strict Container)
 Updated:
-1. Metadata extraction uses strict 'find_next_sibling' from H1.
-   - Finds H1 -> Finds next 'span.sub-title' -> Finds next 'p.lead'.
-2. No guessing, no scanning unrelated elements.
-3. No Backpack (Chunk 0).
+1. Metadata extraction STRICTLY targets the 'templateIntro' container.
+2. Extracts H1, .sub-title, and .lead only from within that div.
+3. No "sibling scanning" or guessing.
 """
 
 import json
@@ -34,9 +33,9 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V12")
+                safe_log("Extractor: Running Surgical Casino Extraction V13")
                 
-                # 1. Metadata (Sibling Targeting)
+                # 1. Metadata (Strict Container)
                 self._extract_metadata_chunk(soup)
                 
                 # 2. FAQ (Robust Search)
@@ -102,43 +101,41 @@ class HTMLContentExtractor:
 
     def _extract_metadata_chunk(self, soup: BeautifulSoup):
         """
-        V12 Update: Strict Sibling Targeting relative to H1.
-        Structure expected:
-        <h1>...</h1>
-        <span class="sub-title">...</span>  (Next Sibling)
-        <p class="lead">...</p>             (Next Sibling)
+        V13 Update: Strict Container Targeting.
+        Looks for 'data-qa=templateIntro...' and extracts H1, Subtitle, Lead ONLY from there.
         """
         metadata_items = []
         
-        # 1. Find H1 (The Anchor)
-        # Check specific container first, then fallback to global
+        # 1. Find the Container
+        # Matches <div data-qa="templateIntroCasinoReviewPage" ...>
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
-        search_scope = intro_container if intro_container else soup
         
-        h1 = search_scope.find('h1')
-        
-        if h1:
-            metadata_items.append(f"H1: {clean_text(h1.get_text())}")
+        if intro_container:
+            # Extract H1
+            h1 = intro_container.find('h1')
+            if h1:
+                metadata_items.append(f"H1: {clean_text(h1.get_text())}")
+                h1.decompose() # Remove from tree so it's not processed again
             
-            # 2. Find Subtitle (Next SPAN sibling after H1 with class sub-title)
-            # We use find_next_sibling to skip whitespace/newlines automatically
-            subtitle = h1.find_next_sibling('span', class_=re.compile(r'sub-title', re.I))
+            # Extract Subtitle (Strict Class)
+            subtitle = intro_container.find(class_=re.compile(r'sub-title', re.I))
             if subtitle:
                 metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
                 subtitle.decompose()
-            
-            # 3. Find Lead (Next P sibling after H1 with class lead)
-            # Note: find_next_sibling on h1 searches forward. Even if lead is after subtitle, 
-            # it is still a sibling of h1.
-            lead = h1.find_next_sibling('p', class_=re.compile(r'lead', re.I))
+                
+            # Extract Lead (Strict Class)
+            lead = intro_container.find(class_=re.compile(r'lead', re.I))
             if lead:
                 metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
                 lead.decompose()
-            
-            # Cleanup H1 last so we don't lose the anchor reference for siblings above
-            h1.decompose()
+        else:
+            # Fallback: Just get global H1 if container is missing (Safety net)
+            h1 = soup.find('h1')
+            if h1:
+                metadata_items.append(f"H1: {clean_text(h1.get_text())}")
+                h1.decompose()
 
-        # 4. Summary Block (Legacy check)
+        # 2. Summary Block (Legacy check, independent of Intro)
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
             text = clean_text(summary_block.get_text())
