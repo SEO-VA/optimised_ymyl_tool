@@ -95,7 +95,7 @@ class AuditOrchestrator:
             dedup_raw_text = "Skipped (No violations found)"
 
         # Report
-        report_md = self._generate_markdown(final_violations, successful_audits)
+        report_md = self._generate_markdown(final_violations, successful_audits, translate_mode)
         
         debug_package = None
         if debug_mode:
@@ -172,40 +172,43 @@ class AuditOrchestrator:
         safe_log(f"Deduplication failed: {error}", "ERROR")
         return violations, f"FAILED: {error}"
 
-    def _generate_markdown(self, violations: List[Violation], audit_count: int) -> str:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        md = [f"# YMYL Compliance Report\n**Date:** {date_str}\n**Audits Performed:** {audit_count}\n---"]
-        
-        if not violations:
-            md.append("\n✅ **No violations found.**")
-            return "\n".join(md)
+    def _generate_markdown(self, violations: List[Violation], audit_count: int, translate_mode: bool) -> str:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            md = [f"# YMYL Compliance Report\n**Date:** {date_str}\n**Audits Performed:** {audit_count}\n---"]
             
-        count = 1
-        for v in violations:
-            if "no violation" in v.violation_type.lower(): continue
-
-            emoji = "🟡"
-            if v.severity.value == "critical": emoji = "🔴"
-            elif v.severity.value == "high": emoji = "🟠"
-            elif v.severity.value == "low": emoji = "🔵"
-            
-            md.append(f"### {count}. {emoji} {v.violation_type}")
-            md.append(f"**Severity:** {v.severity.value.title()}")
-            md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
-            
-            if v.translation:
-                md.append(f"> 🌐 **Translation:** _{v.translation}_")
+            if not violations:
+                md.append("\n✅ **No violations found.**")
+                return "\n".join(md)
                 
-            md.append(f"**Explanation:** {v.explanation}")
-            md.append(f"**Guideline:** Section {v.guideline_section} (Page {v.page_number})")
-            md.append(f"**Suggested Fix:** \"{v.suggested_rewrite}\"")
-            
-            if v.rewrite_translation:
-                 md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
-            
-            md.append("\n---\n")
-            count += 1
-        return "\n".join(md)
+            count = 1
+            for v in violations:
+                if "no violation" in v.violation_type.lower(): continue
+    
+                emoji = "🟡"
+                if v.severity.value == "critical": emoji = "🔴"
+                elif v.severity.value == "high": emoji = "🟠"
+                elif v.severity.value == "low": emoji = "🔵"
+                
+                md.append(f"### {count}. {emoji} {v.violation_type}")
+                md.append(f"**Severity:** {v.severity.value.title()}")
+                md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
+                
+                # --- CONDITIONAL DISPLAY ---
+                # Only show translation if the User requested it
+                if translate_mode and v.translation:
+                    md.append(f"> 🌐 **Translation:** _{v.translation}_")
+                    
+                md.append(f"**Explanation:** {v.explanation}")
+                md.append(f"**Guideline:** Section {v.guideline_section} (Page {v.page_number})")
+                md.append(f"**Suggested Fix:** \"{v.suggested_rewrite}\"")
+                
+                # --- CONDITIONAL DISPLAY ---
+                if translate_mode and v.rewrite_translation:
+                     md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
+                
+                md.append("\n---\n")
+                count += 1
+            return "\n".join(md)
 
 async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int, translate_mode: bool) -> Dict[str, Any]:
     orchestrator = AuditOrchestrator()
