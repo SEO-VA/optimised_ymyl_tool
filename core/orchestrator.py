@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""
+Audit Orchestrator - Standard Edition
+"""
+
 import asyncio
 import json
 import time
@@ -130,3 +134,8 @@ class AuditOrchestrator:
             md.append("\n---\n")
             count += 1
         return "\n".join(md)
+
+# THIS FUNCTION MUST BE AT THE BOTTOM OF THE FILE
+async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
+    orchestrator = AuditOrchestrator()
+    return await orchestrator.run_analysis(content, casino_mode, debug_mode, audit_count)
