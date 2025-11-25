@@ -1,27 +1,22 @@
 #!/usr/bin/env python3
 """
-OpenAI Service Module
-Handles the low-level network communication with OpenAI's Assistant API.
-Updated: Supports 'json_mode' parameter to enforce valid JSON output.
+OpenAI Service Module - Optimized
+Updated: Uses Streaming to reduce latency while keeping Vector Store access.
 """
 
 import asyncio
-import time
 import streamlit as st
-from openai import OpenAI
+from openai import AsyncOpenAI
 from typing import Optional, Tuple
 from utils.helpers import safe_log
 
 class OpenAIService:
-    """
-    Manages the connection to OpenAI.
-    """
-    
     def __init__(self):
         try:
-            self.client = OpenAI(api_key=st.secrets["openai_api_key"])
+            # Use AsyncOpenAI for native async support
+            self.client = AsyncOpenAI(api_key=st.secrets["openai_api_key"])
         except KeyError:
-            safe_log("OpenAI Service: API Key not found in secrets!", "CRITICAL")
+            safe_log("OpenAI Service: API Key not found!", "CRITICAL")
             raise
 
     async def get_response_async(self, 
@@ -30,74 +25,52 @@ class OpenAIService:
                                timeout_seconds: int = 300,
                                task_name: str = "Audit",
                                json_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
-        """
-        Full async workflow with optional JSON Mode enforcement.
-        """
         try:
-            # 1. Create Thread & Message
-            thread = await asyncio.to_thread(self.client.beta.threads.create)
-            
-            await asyncio.to_thread(
-                self.client.beta.threads.messages.create,
+            # 1. Create Thread (Stateless for each audit)
+            thread = await self.client.beta.threads.create()
+
+            # 2. Add Message
+            await self.client.beta.threads.messages.create(
                 thread_id=thread.id,
                 role="user",
                 content=content
             )
-            
-            # 2. Start Run (With JSON Mode if requested)
-            # Note: To use json_object, the prompt MUST contain the word "JSON".
-            run_args = {
-                "thread_id": thread.id,
-                "assistant_id": assistant_id
-            }
-            
-            if json_mode:
-                run_args["response_format"] = {"type": "json_object"}
 
-            run = await asyncio.to_thread(
-                self.client.beta.threads.runs.create,
-                **run_args
-            )
+            # 3. Create Run with Stream (The Speed Fix)
+            # We use a simple event handler to capture the final text
+            full_response = []
             
-            safe_log(f"{task_name}: Started Run {run.id} (JSON Mode: {json_mode})")
+            safe_log(f"{task_name}: Starting Stream...")
             
-            # 3. Poll for completion
-            start_time = time.time()
-            while run.status in ['queued', 'in_progress', 'cancelling']:
-                if time.time() - start_time > timeout_seconds:
-                    return False, None, f"Timeout after {timeout_seconds}s"
-                
-                await asyncio.sleep(2.0)
-                
-                run = await asyncio.to_thread(
-                    self.client.beta.threads.runs.retrieve,
-                    thread_id=thread.id,
-                    run_id=run.id
-                )
+            # Helper to collect stream chunks
+            async with self.client.beta.threads.runs.stream(
+                thread_id=thread.id,
+                assistant_id=assistant_id,
+                response_format={"type": "json_object"} if json_mode else "auto"
+            ) as stream:
+                async for event in stream:
+                    # We only care about text deltas to build the final string
+                    if event.event == 'thread.message.delta':
+                        # Extract text delta safely
+                        if event.data.delta.content:
+                            text_chunk = event.data.delta.content[0].text.value
+                            full_response.append(text_chunk)
+                    
+                    # Log errors if run fails
+                    elif event.event == 'thread.run.failed':
+                        return False, None, f"Run Failed: {event.data.last_error.message}"
+
+            # 4. Assemble Final Text
+            final_text = "".join(full_response)
             
-            # 4. Handle Result
-            if run.status == 'completed':
-                messages = await asyncio.to_thread(
-                    self.client.beta.threads.messages.list,
-                    thread_id=thread.id
-                )
+            if not final_text:
+                return False, None, "Stream ended with no content"
                 
-                if not messages.data: return False, None, "No messages returned"
-                
-                latest_msg = messages.data[0]
-                response_text = latest_msg.content[0].text.value
-                safe_log(f"{task_name}: Success ({len(response_text)} chars)")
-                return True, response_text, None
-                
-            elif run.status == 'failed':
-                err = run.last_error
-                msg = err.message if err else "Unknown error"
-                return False, None, f"OpenAI Failed: {msg}"
-            else:
-                return False, None, f"Unexpected status: {run.status}"
+            safe_log(f"{task_name}: Success ({len(final_text)} chars)")
+            return True, final_text, None
 
         except Exception as e:
-            safe_log(f"{task_name}: Exception - {str(e)}", "ERROR")
+            safe_log(f"{task_name}: Error - {str(e)}", "ERROR")
             return False, None, f"System Error: {str(e)}"
 
 openai_service = OpenAIService()
