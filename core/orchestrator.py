@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
 Audit Orchestrator - Dashboard Prompt Edition
-Uses the prompts saved in OpenAI Assistants Dashboard.
 """
 
 import asyncio
 import json
 import time
-import re
 import streamlit as st
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
@@ -17,14 +15,12 @@ from core.service import openai_service
 from core.parser import ResponseParser
 from utils.helpers import safe_log
 
-# Safety limit
 MAX_CONCURRENT_AUDITS = 5
 
 class AuditOrchestrator:
     
     def __init__(self):
         try:
-            # Load IDs Only (Prompts are in the Dashboard now)
             self.settings = {
                 'regular_assistant_id': st.secrets["regular_assistant_id"],
                 'casino_assistant_id': st.secrets["casino_assistant_id"],
@@ -34,28 +30,21 @@ class AuditOrchestrator:
             safe_log(f"Orchestrator: Missing configuration key {e}", "CRITICAL")
             raise
 
-    async def run_analysis(self, content_json: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
+    async def run_analysis(self, content_json: str, casino_mode: bool, debug_mode: bool, audit_count: int, translate_mode: bool) -> Dict[str, Any]:
         start_time = time.time()
         
-        # 1. Select Assistant ID
         target_assistant_id = self.settings['casino_assistant_id'] if casino_mode else self.settings['regular_assistant_id']
-        
-        # 2. Prepare Payload
         analyzer_payload_json, global_context_dict = self._build_analyzer_payload(content_json)
         
         if debug_mode:
-            safe_log(f"🔍 DEBUG Context: {global_context_dict}")
             safe_log(f"🔍 DEBUG Payload Size: {len(analyzer_payload_json)} chars")
         
         safe_log(f"Orchestrator: Starting {audit_count} audits...")
-
-        # 3. Run Parallel Audits
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
 
         async def _run_audit(index):
             async with semaphore:
                 await asyncio.sleep(index * 1.0) 
-                # FIX: Calling 'get_assistant_response' instead of 'get_response_async'
                 return await openai_service.get_assistant_response(
                     content=analyzer_payload_json,
                     assistant_id=target_assistant_id,
@@ -91,20 +80,21 @@ class AuditOrchestrator:
         if successful_audits == 0:
             return {"success": False, "error": "All audits failed."}
 
-        # 4. Deduplication
+        # Deduplication
         dedup_raw_text = "Skipped"
         final_violations = []
         
         if all_violations:
             final_violations, dedup_raw_text = await self._run_deduplication(
                 all_violations, 
-                global_context_dict
+                global_context_dict,
+                translate_mode # Pass preference
             )
         else:
             final_violations = []
             dedup_raw_text = "Skipped (No violations found)"
 
-        # 5. Report
+        # Report
         report_md = self._generate_markdown(final_violations, successful_audits)
         
         debug_package = None
@@ -145,25 +135,29 @@ class AuditOrchestrator:
         global_context = {
             "primary_topic": h1_text,
             "content_type": "Commercial Review", 
-            "ymyl_category": "Financial/Gambling (Strict Accuracy Required)",
+            "ymyl_category": "Financial/Gambling",
             "global_assumptions": {
-                "site_identity": "Compliant (Assume About Us exists)",
-                "affiliate_disclosure": "Compliant (Assume footer disclaimer exists)",
+                "site_identity": "Compliant",
+                "affiliate_disclosure": "Compliant",
                 "site_reputation": "Neutral/Good"
             }
         }
         payload = {"global_context": global_context, "chunk_text": content_json}
         return json.dumps(payload, indent=2), global_context
 
-    async def _run_deduplication(self, violations: List[Violation], context_backpack: Dict) -> Tuple[List[Violation], str]:
+    async def _run_deduplication(self, violations: List[Violation], context_backpack: Dict, translate_mode: bool) -> Tuple[List[Violation], str]:
         if not violations: return [], "No violations"
+
+        # Inject User Preference into Backpack
+        context_backpack["user_preference"] = {
+            "force_english_translation": translate_mode
+        }
 
         payload = {
             "context_backpack": context_backpack, 
             "violations_input": [v.to_dict() for v in violations]
         }
         
-        # FIX: Calling 'get_assistant_response' instead of 'get_response_async'
         success, text, error = await openai_service.get_assistant_response(
             content=json.dumps(payload, indent=2),
             assistant_id=self.settings['deduplicator_assistant_id'],
@@ -173,35 +167,10 @@ class AuditOrchestrator:
         
         if success and text:
             deduped_list = ResponseParser.parse_to_violations(text)
-            final_list = self._restore_translations(deduped_list, violations)
-            return final_list, text
+            return deduped_list, text
         
         safe_log(f"Deduplication failed: {error}", "ERROR")
         return violations, f"FAILED: {error}"
-
-    def _normalize_key(self, text: str) -> str:
-        if not text: return ""
-        return re.sub(r'[\W_]+', '', text.lower())[:100]
-
-    def _restore_translations(self, unique_list: List[Violation], original_list: List[Violation]) -> List[Violation]:
-        text_map = {} 
-        backup_map = {}
-        for v in original_list:
-            if v.translation:
-                norm_text = self._normalize_key(v.problematic_text)
-                if norm_text: text_map[norm_text] = (v.translation, v.rewrite_translation)
-                backup_key = f"{v.page_number}-{v.violation_type}"
-                backup_map[backup_key] = (v.translation, v.rewrite_translation)
-        for v in unique_list:
-            if v.translation: continue
-            norm_text = self._normalize_key(v.problematic_text)
-            if norm_text in text_map:
-                v.translation, v.rewrite_translation = text_map[norm_text]
-            else:
-                backup_key = f"{v.page_number}-{v.violation_type}"
-                if backup_key in backup_map:
-                    v.translation, v.rewrite_translation = backup_map[backup_key]
-        return unique_list
 
     def _generate_markdown(self, violations: List[Violation], audit_count: int) -> str:
         date_str = datetime.now().strftime("%Y-%m-%d")
@@ -238,6 +207,6 @@ class AuditOrchestrator:
             count += 1
         return "\n".join(md)
 
-async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
+async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int, translate_mode: bool) -> Dict[str, Any]:
     orchestrator = AuditOrchestrator()
-    return await orchestrator.run_analysis(content, casino_mode, debug_mode, audit_count)
+    return await orchestrator.run_analysis(content, casino_mode, debug_mode, audit_count, translate_mode)
