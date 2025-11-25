@@ -81,8 +81,10 @@ def _add_formatted_text(paragraph, text, is_translation=False):
     target_color = None
     if '🔴' in text or 'Critical' in text:
         target_color = RGBColor(231, 76, 60) # Red
-    elif '🟠' in text or 'High' in text:
+    elif '🟠' in text or 'High' in text or 'Medium' in text: # <--- Added Medium
         target_color = RGBColor(230, 126, 34) # Orange
+    elif 'Low' in text:
+        target_color = RGBColor(46, 134, 193) # Blue (Optional)
         
     # 2. Split by bold markers first: **text**
     parts = re.split(r'(\*\*.*?\*\*)', text)
