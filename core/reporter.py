@@ -2,7 +2,7 @@
 """
 Report Generator - Advanced Edition
 Converts Markdown text into a professionally formatted Word (.docx) document.
-Updated: Fixed 'IndexError' by applying color AFTER text is added.
+Updated: Supports Translation blockquotes and Medium severity coloring.
 """
 
 import io
@@ -49,6 +49,7 @@ def generate_word_report(markdown_content: str, title: str, casino_mode: bool) -
                     p.add_run().font.color.rgb = RGBColor(200, 200, 200)
             elif line.startswith('> '):
                 # Blockquote (Used for Translations)
+                # This handles the English translation lines if translate_mode=True
                 p = doc.add_paragraph()
                 p.paragraph_format.left_indent = Inches(0.5)
                 _add_formatted_text(p, line[2:], is_translation=True)
@@ -79,12 +80,14 @@ def _add_formatted_text(paragraph, text, is_translation=False):
     """
     # 1. Determine Color (But don't apply it yet)
     target_color = None
+    
+    # Fix: Added 'Medium' to Orange color mapping logic
     if '🔴' in text or 'Critical' in text:
         target_color = RGBColor(231, 76, 60) # Red
-    elif '🟠' in text or 'High' in text or 'Medium' in text: # <--- Added Medium
+    elif '🟠' in text or 'High' in text or 'Medium' in text:
         target_color = RGBColor(230, 126, 34) # Orange
-    elif 'Low' in text:
-        target_color = RGBColor(46, 134, 193) # Blue (Optional)
+    elif '🔵' in text or 'Low' in text:
+        target_color = RGBColor(46, 134, 193) # Blue
         
     # 2. Split by bold markers first: **text**
     parts = re.split(r'(\*\*.*?\*\*)', text)
