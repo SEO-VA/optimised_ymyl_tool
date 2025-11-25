@@ -45,7 +45,9 @@ class AuditOrchestrator:
         # 2. Prepare Payload (Backpack + Content)
         # We build the payload ONCE here to extract the backpack context
         analyzer_payload_json, global_context_dict = self._build_analyzer_payload(content_json)
-        
+
+        safe_log(f"🔍 DEBUG Payload Size: {len(analyzer_payload_json)} chars")
+        safe_log(f"🔍 DEBUG Context: {global_context_dict}")
         safe_log(f"Orchestrator: Starting {audit_count} audits...")
 
         # 3. Run Parallel Audits
