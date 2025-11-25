@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-OpenAI Service Module - Robust Chat Completion
-Switched to Chat Completions for reliability and speed with gpt-4o-mini.
+OpenAI Service Module - Assistants API (Polling)
+Enables Vector Store access (PDFs) while using Prompts from Secrets.
 """
 
 import asyncio
-import json
 import streamlit as st
 from openai import AsyncOpenAI
 from typing import Optional, Tuple
@@ -19,48 +18,61 @@ class OpenAIService:
             safe_log("OpenAI Service: API Key not found!", "CRITICAL")
             raise
 
-    async def get_response_async(self, 
-                               content: str, 
-                               assistant_id: str, # Kept for compatibility, but we use System Prompt now
-                               task_name: str = "Audit",
-                               timeout_seconds: int = 300,
-                               json_mode: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
+    async def get_assistant_response(self, 
+                                   content: str, 
+                                   assistant_id: str, 
+                                   system_instruction: str, # <-- We pass the prompt here
+                                   task_name: str = "Audit",
+                                   timeout_seconds: int = 300) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Uses Chat Completions API (simpler and faster than Assistants API for this use case).
-        Note: We need to retrieve the System Prompt from the Assistant ID if you want to keep using the Dashboard.
-        OR, for simplicity now, we can just pass the instruction directly if you have it.
-        
-        Since your Orchestrator passes an Assistant ID, we will use the retrieve() call to get its instructions first.
+        Uses the Assistants API with Polling.
+        Crucial: We pass 'instructions' to the Run to override the Dashboard prompt.
         """
         try:
-            # 1. Fetch the System Prompt from the Assistant ID (So you can still edit it in Dashboard)
-            assistant = await self.client.beta.assistants.retrieve(assistant_id)
-            system_prompt = assistant.instructions
+            # 1. Create a fresh Thread (Stateless for each audit)
+            thread = await self.client.beta.threads.create()
 
-            # 2. Call Chat Completion
-            safe_log(f"{task_name}: Sending request to {assistant.model}...")
-            
-            response = await self.client.chat.completions.create(
-                model=assistant.model, # Uses the model set in Dashboard (gpt-4o-mini)
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": content}
-                ],
-                response_format={"type": "json_object"} if json_mode else None,
-                temperature=0.1 # Low temp for strict compliance
+            # 2. Add the User Message (The Payload)
+            await self.client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=content
             )
 
-            # 3. Extract Response
-            result_text = response.choices[0].message.content
-            
-            if not result_text:
-                return False, None, "Empty response from OpenAI"
+            # 3. Create & Poll the Run
+            # We override the instructions here so it uses your "secrets.toml" prompt
+            run = await self.client.beta.threads.runs.create_and_poll(
+                thread_id=thread.id,
+                assistant_id=assistant_id,
+                instructions=system_instruction, 
+                response_format={"type": "json_object"} # Force JSON
+            )
 
-            safe_log(f"{task_name}: Success ({len(result_text)} chars)")
-            return True, result_text, None
+            # 4. Check Status
+            if run.status == 'completed':
+                # Retrieve the messages
+                messages = await self.client.beta.threads.messages.list(
+                    thread_id=thread.id,
+                    order="desc", # Newest first
+                    limit=1
+                )
+                
+                if not messages.data:
+                    return False, None, "No messages returned"
+                
+                # Extract text
+                result_text = messages.data[0].content[0].text.value
+                safe_log(f"{task_name}: Success ({len(result_text)} chars)")
+                return True, result_text, None
+            
+            else:
+                # Handle failures (e.g. content filter, rate limit)
+                err_msg = run.last_error.message if run.last_error else run.status
+                safe_log(f"{task_name}: Run Failed - {err_msg}", "ERROR")
+                return False, None, f"AI Error: {err_msg}"
 
         except Exception as e:
-            safe_log(f"{task_name}: Error - {str(e)}", "ERROR")
+            safe_log(f"{task_name}: Exception - {str(e)}", "ERROR")
             return False, None, f"System Error: {str(e)}"
 
 openai_service = OpenAIService()
