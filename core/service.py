@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OpenAI Service Module - Assistants API (Polling)
-Uses Dashboard Prompts + Vector Store.
+Updated: Forces 'file_search' tool usage to prevent hallucinations.
 """
 
 import asyncio
@@ -25,7 +25,7 @@ class OpenAIService:
                                    timeout_seconds: int = 300) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Uses the Assistants API with Polling.
-        Crucial: We DO NOT pass 'instructions' here, so it uses the Dashboard Prompt.
+        Forces the model to use the 'file_search' tool to verify facts against the PDF.
         """
         try:
             # 1. Create a fresh Thread (Stateless for each audit)
@@ -39,11 +39,13 @@ class OpenAIService:
             )
 
             # 3. Create & Poll the Run
-            # Removed 'instructions' param to use the Dashboard System Prompt
+            # FORCE TOOL USE: We explicitly tell the AI it MUST use file_search.
+            # This prevents "instant" answers from internal memory.
             run = await self.client.beta.threads.runs.create_and_poll(
                 thread_id=thread.id,
                 assistant_id=assistant_id,
-                response_format={"type": "json_object"} # Force JSON
+                response_format={"type": "json_object"}, # Force JSON output
+                tool_choice={"type": "file_search"}      # <--- THE FIX: Force PDF Search
             )
 
             # 4. Check Status
@@ -62,6 +64,7 @@ class OpenAIService:
                 return True, result_text, None
             
             else:
+                # Handle failures (e.g. content filter, rate limit)
                 err_msg = run.last_error.message if run.last_error else run.status
                 safe_log(f"{task_name}: Run Failed - {err_msg}", "ERROR")
                 return False, None, f"AI Error: {err_msg}"
