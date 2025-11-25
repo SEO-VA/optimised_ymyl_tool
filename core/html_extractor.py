@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V11 (Strict Classes)
+HTML Content Extractor - Surgical Edition V12 (Sibling Targeting)
 Updated:
-1. Strict selectors for Metadata: h1, span.sub-title, p.lead.
-2. No fallback scanning/guessing.
+1. Metadata extraction uses strict 'find_next_sibling' from H1.
+   - Finds H1 -> Finds next 'span.sub-title' -> Finds next 'p.lead'.
+2. No guessing, no scanning unrelated elements.
 3. No Backpack (Chunk 0).
 """
 
@@ -33,9 +34,9 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V11")
+                safe_log("Extractor: Running Surgical Casino Extraction V12")
                 
-                # 1. Metadata (Strict Class Search)
+                # 1. Metadata (Sibling Targeting)
                 self._extract_metadata_chunk(soup)
                 
                 # 2. FAQ (Robust Search)
@@ -101,35 +102,43 @@ class HTMLContentExtractor:
 
     def _extract_metadata_chunk(self, soup: BeautifulSoup):
         """
-        V11 Update: Strict Class Targeting.
-        Looks for H1, .sub-title, and .lead specifically.
-        Prioritizes the 'templateIntro' container if it exists.
+        V12 Update: Strict Sibling Targeting relative to H1.
+        Structure expected:
+        <h1>...</h1>
+        <span class="sub-title">...</span>  (Next Sibling)
+        <p class="lead">...</p>             (Next Sibling)
         """
         metadata_items = []
         
-        # 1. Define Search Area (Prefer intro container, fallback to full soup)
+        # 1. Find H1 (The Anchor)
+        # Check specific container first, then fallback to global
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
-        search_area = intro_container if intro_container else soup
+        search_scope = intro_container if intro_container else soup
         
-        # 2. Extract H1
-        h1 = search_area.find('h1')
+        h1 = search_scope.find('h1')
+        
         if h1:
             metadata_items.append(f"H1: {clean_text(h1.get_text())}")
+            
+            # 2. Find Subtitle (Next SPAN sibling after H1 with class sub-title)
+            # We use find_next_sibling to skip whitespace/newlines automatically
+            subtitle = h1.find_next_sibling('span', class_=re.compile(r'sub-title', re.I))
+            if subtitle:
+                metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
+                subtitle.decompose()
+            
+            # 3. Find Lead (Next P sibling after H1 with class lead)
+            # Note: find_next_sibling on h1 searches forward. Even if lead is after subtitle, 
+            # it is still a sibling of h1.
+            lead = h1.find_next_sibling('p', class_=re.compile(r'lead', re.I))
+            if lead:
+                metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
+                lead.decompose()
+            
+            # Cleanup H1 last so we don't lose the anchor reference for siblings above
             h1.decompose()
 
-        # 3. Extract Subtitle (Strict Class: .sub-title)
-        subtitle = search_area.find('span', class_='sub-title')
-        if subtitle:
-            metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
-            subtitle.decompose()
-
-        # 4. Extract Lead (Strict Class: .lead)
-        lead = search_area.find('p', class_='lead')
-        if lead:
-            metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
-            lead.decompose()
-
-        # 5. Summary Block (Legacy check)
+        # 4. Summary Block (Legacy check)
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
             text = clean_text(summary_block.get_text())
