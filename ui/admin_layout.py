@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-Admin Layout - Advanced & Persistent
-Features:
-- Persistent Results: Logs don't vanish after download.
-- Smart Reset: Clears analysis but keeps login.
-- Debug Inspector: 3 Tabs to inspect the AI chain.
+Admin Layout - Clean Slate
+Updated: Restores 'Casino Mode' checkbox in Step 1 so Admins can trigger Surgical Extraction.
 """
 
 import streamlit as st
@@ -16,8 +13,6 @@ import json
 class AdminLayout:
     
     def __init__(self):
-        # Determine current step based on data presence
-        # If we have extraction data, we are in Step 2
         self.current_step = 2 if st.session_state.get('extracted_content') or st.session_state.get('admin_multi_extracted') else 1
     
     def render(self, selected_feature: str):
@@ -27,16 +22,12 @@ class AdminLayout:
             st.error(f"❌ {str(e)}")
             return
         
-        # --- SIDEBAR: SYSTEM STATE ---
         with st.sidebar:
             with st.expander("🕵️ System State Inspector", expanded=False):
                 st.write(f"**Current Step:** {self.current_step}")
                 if 'extracted_content' in st.session_state:
                     st.write(f"**Content Size:** {len(st.session_state['extracted_content'])} chars")
-                if 'admin_last_result' in st.session_state:
-                    st.success("✅ Results in Memory")
 
-        # --- MAIN COLUMN LAYOUT ---
         col1, col2 = st.columns([3, 1])
         with col1:
             if self.current_step == 1:
@@ -44,26 +35,40 @@ class AdminLayout:
             else:
                 self._render_step2(feature_handler)
         with col2:
-            # Global Reset Button (Always visible)
             if st.button("🔄 Reset All", use_container_width=True):
                 self._smart_reset()
 
     def _smart_reset(self):
-        """Clears analysis data but keeps user logged in."""
         keys_to_keep = ['authenticated', 'username', 'global_casino_mode']
         for key in list(st.session_state.keys()):
             if key not in keys_to_keep:
                 del st.session_state[key]
         st.rerun()
 
-    # --- STEP 1: EXTRACTION ---
     def _render_step1(self, handler):
         st.subheader("Step 1: Extraction")
+        
+        # 1. Input Interface
         input_data = handler.get_input_interface()
         
-        # Inject Global Casino Mode
-        input_data['casino_mode'] = st.session_state.get('global_casino_mode', False)
+        # 2. Options (Restored Checkbox)
+        st.markdown("---")
+        col_opt, col_blank = st.columns([1, 1])
+        with col_opt:
+            # Default to False or previous state
+            current_mode = st.session_state.get('global_casino_mode', False)
+            casino_mode = st.checkbox(
+                "🎰 Casino Mode (Surgical Extraction)", 
+                value=current_mode,
+                help="Enable to use the specialized extractor for Casino Reviews (Metadata/Backpack)."
+            )
+            # Save to state and input_data
+            st.session_state['global_casino_mode'] = casino_mode
+            input_data['casino_mode'] = casino_mode
+        
         is_multi = handler.is_multi_file_input(input_data) if hasattr(handler, 'is_multi_file_input') else False
+        
+        st.markdown("---")
         
         if st.button("Extract Content", type="primary", disabled=not input_data.get('is_valid')):
             with st.spinner("Extracting..."):
@@ -78,7 +83,6 @@ class AdminLayout:
                 else:
                     st.error(f"Extraction Failed: {err}")
 
-    # --- STEP 2: ANALYSIS ---
     def _render_step2(self, handler):
         col_head, col_btn = st.columns([3, 1])
         with col_head:
@@ -87,7 +91,6 @@ class AdminLayout:
             if st.button("🗑️ Discard & Restart", type="secondary", use_container_width=True):
                 self._smart_reset()
         
-        # 1. Preview Input
         is_multi = 'admin_multi_extracted' in st.session_state
         if is_multi:
             self._render_multi_preview()
@@ -96,35 +99,31 @@ class AdminLayout:
 
         st.divider()
 
-        # 2. Controls
         col1, col2 = st.columns(2)
-        debug = col1.checkbox("Debug Mode", value=True, help="Show raw JSON and Inspector")
+        debug = col1.checkbox("Debug Mode", value=True)
         test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False)
         audit_count = 1 if test_mode else 5
-        casino_mode = st.session_state.get('global_casino_mode', False)
         
-        # 3. Run Button
+        # Retrieve the mode we set in Step 1
+        casino_mode = st.session_state.get('global_casino_mode', False)
+        if casino_mode:
+            st.info("🎰 Casino Mode is ACTIVE")
+        
         if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary", use_container_width=True):
             if is_multi:
                 self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count, casino_mode)
             else:
                 self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count, casino_mode)
 
-        # 4. Persistent Result Display
-        # This runs every time the page refreshes, so results don't disappear
-        if 'admin_last_result' in st.session_state:
-            self._display_results(st.session_state['admin_last_result'], debug, st.session_state.get('source_info', 'Report'))
-
     def _render_single_preview(self):
         content = st.session_state.get('extracted_content', '')
-        with st.expander("👁️ View Extracted JSON", expanded=False):
+        with st.expander("👁️ View Extracted JSON", expanded=True):
             st.code(content, language='json')
 
     def _render_multi_preview(self):
         content_json = st.session_state.get('admin_multi_extracted', '{}')
         try:
             files = json.loads(content_json).get('files', {})
-            st.info(f"✅ Loaded {len(files)} files")
             preview_file = st.selectbox("Inspect file:", list(files.keys()))
             if preview_file:
                 with st.expander(f"View: {preview_file}"):
@@ -132,7 +131,6 @@ class AdminLayout:
         except: pass
 
     def _sanitize_for_display(self, result_dict):
-        """Hides the massive binary string from the debug view"""
         clean = result_dict.copy()
         if 'word_bytes' in clean and clean['word_bytes']:
             size_kb = len(clean['word_bytes']) / 1024
@@ -144,51 +142,37 @@ class AdminLayout:
             result = processor.process_single_file(content, source, casino_mode, debug, count)
             
             if result['success']:
-                st.session_state['admin_last_result'] = result # SAVE TO STATE
                 status.update(label="Done", state="complete")
                 trigger_completion_notification()
-                st.rerun() # Force refresh to show results via _display_results
+                
+                if result.get('word_bytes'):
+                    st.download_button("📄 Download Report", result['word_bytes'], f"Report_{source}.docx", type="primary", use_container_width=True)
+                
+                if debug and result.get('debug_info'):
+                    st.divider()
+                    st.subheader("🔍 AI Raw Output Inspector")
+                    d_info = result['debug_info']
+                    
+                    tab1, tab2, tab3 = st.tabs(["1️⃣ Deduplicator Output", "2️⃣ Individual Audits", "3️⃣ Final JSON"])
+                    
+                    with tab1:
+                        st.caption("Raw Output from Deduplication AI")
+                        st.text_area("Raw Deduplicator", d_info.get('deduplicator_raw', 'N/A'), height=400)
+                    
+                    with tab2:
+                        audits = d_info.get('audits', [])
+                        for a in audits:
+                            with st.expander(f"Audit #{a.get('audit_number')}"):
+                                st.code(a.get('raw_response'), language='json')
+
+                    with tab3:
+                        st.caption("Final Cleaned Structure")
+                        st.json(self._sanitize_for_display(result).get('violations', []))
+
+                elif not debug:
+                    st.markdown(result['report'])
             else:
                 st.error(result.get('error'))
-
-    def _display_results(self, result, debug, source_name):
-        """Displays results from storage"""
-        st.divider()
-        st.success("✅ Analysis Complete")
-        
-        # Download Button
-        if result.get('word_bytes'):
-            st.download_button(
-                label="📄 Download Word Report", 
-                data=result['word_bytes'], 
-                file_name=f"Report_{source_name}.docx", 
-                type="primary", 
-                use_container_width=True
-            )
-        
-        # Debug Inspector
-        if debug and result.get('debug_info'):
-            st.subheader("🔍 AI Raw Output Inspector")
-            d_info = result['debug_info']
-            
-            tab1, tab2, tab3 = st.tabs(["1️⃣ Deduplicator Output", "2️⃣ Audits", "3️⃣ Final JSON"])
-            
-            with tab1:
-                st.caption("Raw Output from Deduplication AI")
-                st.text_area("Raw Deduplicator", d_info.get('deduplicator_raw', 'N/A'), height=400)
-            
-            with tab2:
-                audits = d_info.get('audits', [])
-                for a in audits:
-                    with st.expander(f"Audit #{a.get('audit_number')}"):
-                        st.code(a.get('raw_response'), language='json')
-
-            with tab3:
-                st.caption("Final Cleaned Structure")
-                st.json(self._sanitize_for_display(result).get('violations', []))
-        
-        elif not debug:
-            st.markdown(result['report'])
 
     def _run_multi(self, content_json, debug, count, casino_mode):
         files = json.loads(content_json).get('files', {})
@@ -197,7 +181,6 @@ class AdminLayout:
             status.update(label="Done", state="complete")
             trigger_completion_notification()
             
-            # Display Multi Results directly (Harder to persist complex multi-dict, so we show immediately)
             for fname, res in results.items():
                 with st.expander(f"{fname} ({'Success' if res['success'] else 'Failed'})"):
                     if res['success']:
