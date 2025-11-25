@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OpenAI Service Module - Assistants API (Polling)
-Enables Vector Store access (PDFs) while using Prompts from Secrets.
+Uses Dashboard Prompts + Vector Store.
 """
 
 import asyncio
@@ -21,12 +21,11 @@ class OpenAIService:
     async def get_assistant_response(self, 
                                    content: str, 
                                    assistant_id: str, 
-                                   system_instruction: str, # <-- We pass the prompt here
                                    task_name: str = "Audit",
                                    timeout_seconds: int = 300) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Uses the Assistants API with Polling.
-        Crucial: We pass 'instructions' to the Run to override the Dashboard prompt.
+        Crucial: We DO NOT pass 'instructions' here, so it uses the Dashboard Prompt.
         """
         try:
             # 1. Create a fresh Thread (Stateless for each audit)
@@ -40,33 +39,29 @@ class OpenAIService:
             )
 
             # 3. Create & Poll the Run
-            # We override the instructions here so it uses your "secrets.toml" prompt
+            # Removed 'instructions' param to use the Dashboard System Prompt
             run = await self.client.beta.threads.runs.create_and_poll(
                 thread_id=thread.id,
                 assistant_id=assistant_id,
-                instructions=system_instruction, 
                 response_format={"type": "json_object"} # Force JSON
             )
 
             # 4. Check Status
             if run.status == 'completed':
-                # Retrieve the messages
                 messages = await self.client.beta.threads.messages.list(
                     thread_id=thread.id,
-                    order="desc", # Newest first
+                    order="desc", 
                     limit=1
                 )
                 
                 if not messages.data:
                     return False, None, "No messages returned"
                 
-                # Extract text
                 result_text = messages.data[0].content[0].text.value
                 safe_log(f"{task_name}: Success ({len(result_text)} chars)")
                 return True, result_text, None
             
             else:
-                # Handle failures (e.g. content filter, rate limit)
                 err_msg = run.last_error.message if run.last_error else run.status
                 safe_log(f"{task_name}: Run Failed - {err_msg}", "ERROR")
                 return False, None, f"AI Error: {err_msg}"
