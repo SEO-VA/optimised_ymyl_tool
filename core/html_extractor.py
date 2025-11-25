@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V8
-Updated: 
-1. Exact selectors for Subtitle (.sub-title) and Lead (.lead).
-2. Robust FAQ detection (Schema + Header Hunt).
+HTML Content Extractor - Surgical Edition V9 (Hybrid Metadata)
+Updated:
+1. Metadata now uses a "Proximity Scan" fallback if specific classes are missing.
+2. Ensures H1, Subtitle, and Lead are captured even if HTML structure varies.
 3. No Backpack (Chunk 0).
 """
 
@@ -33,9 +33,9 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V8")
+                safe_log("Extractor: Running Surgical Casino Extraction V9")
                 
-                # 1. Metadata (Targeted)
+                # 1. Metadata (Hybrid Scan)
                 self._extract_metadata_chunk(soup)
                 
                 # 2. FAQ (Robust Search)
@@ -84,7 +84,6 @@ class HTMLContentExtractor:
             comment.extract()
 
     def _remove_casino_widgets(self, soup: BeautifulSoup):
-        # Aggressively remove sidebar/widget noise
         noise_patterns = [
             re.compile(r'^blockCasino'),
             re.compile(r'^widget'),
@@ -101,31 +100,69 @@ class HTMLContentExtractor:
 
     def _extract_metadata_chunk(self, soup: BeautifulSoup):
         """
-        Extracts Metadata using strict selectors requested by user.
+        V9 Hybrid Strategy:
+        1. Find H1.
+        2. Try specific selectors (.lead, .sub-title).
+        3. If not found, scan siblings immediately after H1.
         """
         metadata_items = []
         
-        # 1. H1
+        # 1. Get H1
         h1 = soup.find('h1')
         if h1:
             metadata_items.append(f"H1: {clean_text(h1.get_text())}")
-            h1.decompose()
+            # Don't decompose yet, we need it for positioning
+        
+        # 2. Try Strict Selectors first (High Confidence)
+        found_subtitle = False
+        found_lead = False
+        
+        subtitle_el = soup.select_one('.sub-title, .subtitle')
+        if subtitle_el:
+            metadata_items.append(f"SUBTITLE: {clean_text(subtitle_el.get_text())}")
+            subtitle_el.decompose()
+            found_subtitle = True
 
-        # 2. Subtitle (Specific Class)
-        # Target: <span class="sub-title d-block">
-        subtitle = soup.find('span', class_='sub-title')
-        if subtitle:
-            metadata_items.append(f"SUBTITLE: {clean_text(subtitle.get_text())}")
-            subtitle.decompose()
+        lead_el = soup.select_one('.lead, .intro, .introduction')
+        if lead_el:
+            metadata_items.append(f"LEAD: {clean_text(lead_el.get_text())}")
+            lead_el.decompose()
+            found_lead = True
 
-        # 3. Lead (Specific Class)
-        # Target: <p class="lead">
-        lead = soup.find('p', class_='lead')
-        if lead:
-            metadata_items.append(f"LEAD: {clean_text(lead.get_text())}")
-            lead.decompose()
+        # 3. Fallback: Proximity Scan (If strict failed)
+        if h1 and (not found_subtitle or not found_lead):
+            curr = h1.next_sibling
+            scan_count = 0
+            
+            while curr and scan_count < 5:
+                if isinstance(curr, Tag) and curr.name in ['p', 'div', 'span', 'h2', 'h3', 'h4']:
+                    text = clean_text(curr.get_text())
+                    
+                    # Skip empty or meta info
+                    if not text or len(text) < 5 or "author" in text.lower() or "date" in text.lower():
+                        curr = curr.next_sibling
+                        continue
+                    
+                    # Heuristic: Subtitle is usually short (< 100 chars)
+                    if not found_subtitle and len(text) < 120:
+                        metadata_items.append(f"SUBTITLE (Inferred): {text}")
+                        curr.decompose()
+                        found_subtitle = True
+                    
+                    # Heuristic: Lead is usually longer (> 100 chars)
+                    elif not found_lead and len(text) >= 120:
+                        metadata_items.append(f"LEAD (Inferred): {text}")
+                        curr.decompose()
+                        found_lead = True
+                        
+                    scan_count += 1
+                
+                curr = curr.next_sibling
 
-        # 4. Summary Block (Legacy support, just in case)
+        # Remove H1 now that we are done with it
+        if h1: h1.decompose()
+
+        # 4. Summary Block (Always check)
         summary_block = soup.find(attrs={'data-qa': 'blockCasinoSummary'})
         if summary_block:
             text = clean_text(summary_block.get_text())
@@ -141,39 +178,31 @@ class HTMLContentExtractor:
             self.chunk_index += 1
 
     def _extract_faq_chunk(self, soup: BeautifulSoup) -> Optional[Dict]:
-        """
-        Multi-strategy FAQ hunting.
-        1. data-qa="templateFAQ"
-        2. Schema.org (itemtype="FAQPage")
-        3. Header Search ("FAQ")
-        """
         faq_items = []
         faq_section = None
 
-        # Strategy A: Data Attribute (Best)
+        # A. Data Attribute
         faq_section = soup.find(attrs={'data-qa': 'templateFAQ'}) or soup.find(class_='faq-section')
         
-        # Strategy B: Schema.org
+        # B. Schema.org
         if not faq_section:
             faq_section = soup.find(attrs={'itemtype': re.compile(r'schema\.org/FAQPage')})
 
-        # Strategy C: Header Hunt (Fallback)
-        # Look for H2/H3 with "FAQ" and grab following content
+        # C. Header Hunt
         if not faq_section:
             for header in soup.find_all(['h2', 'h3']):
                 if 'faq' in header.get_text().lower() or 'frequently asked' in header.get_text().lower():
-                    # Create dummy section with siblings until next header
                     faq_section = soup.new_tag('div')
                     curr = header.next_sibling
                     while curr and (not isinstance(curr, Tag) or curr.name not in ['h1', 'h2']):
                         if isinstance(curr, Tag): faq_section.append(curr.extract())
                         curr = curr.next_sibling
-                    header.decompose() # Remove the header itself from main flow
+                    header.decompose()
                     break
 
         if not faq_section: return None
 
-        # Process Content inside found section
+        # Extract Questions
         questions = faq_section.find_all(attrs={'itemtype': re.compile(r'schema\.org/Question')})
         if not questions: 
             questions = faq_section.find_all(['h3', 'h4', 'h5', 'strong', 'b'])
@@ -182,14 +211,12 @@ class HTMLContentExtractor:
             q_text = clean_text(q.get_text())
             if not q_text or len(q_text) < 5: continue
             
-            # Find Answer
             a_text = ""
             a_container = q.find(attrs={'itemprop': 'acceptedAnswer'})
             
             if a_container:
                 a_text = clean_text(a_container.get_text())
             else:
-                # Sibling Scan
                 curr = q.next_sibling
                 while curr and (not isinstance(curr, Tag) or curr.name in ['br', 'span']):
                     curr = curr.next_sibling
