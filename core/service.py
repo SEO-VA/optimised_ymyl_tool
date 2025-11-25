@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-OpenAI Service Module - Optimized
-Updated: Uses Streaming to reduce latency while keeping Vector Store access.
+OpenAI Service Module - Robust Chat Completion
+Switched to Chat Completions for reliability and speed with gpt-4o-mini.
 """
 
 import asyncio
+import json
 import streamlit as st
 from openai import AsyncOpenAI
 from typing import Optional, Tuple
@@ -13,7 +14,6 @@ from utils.helpers import safe_log
 class OpenAIService:
     def __init__(self):
         try:
-            # Use AsyncOpenAI for native async support
             self.client = AsyncOpenAI(api_key=st.secrets["openai_api_key"])
         except KeyError:
             safe_log("OpenAI Service: API Key not found!", "CRITICAL")
@@ -21,53 +21,43 @@ class OpenAIService:
 
     async def get_response_async(self, 
                                content: str, 
-                               assistant_id: str, 
-                               timeout_seconds: int = 300,
+                               assistant_id: str, # Kept for compatibility, but we use System Prompt now
                                task_name: str = "Audit",
-                               json_mode: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
+                               timeout_seconds: int = 300,
+                               json_mode: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Uses Chat Completions API (simpler and faster than Assistants API for this use case).
+        Note: We need to retrieve the System Prompt from the Assistant ID if you want to keep using the Dashboard.
+        OR, for simplicity now, we can just pass the instruction directly if you have it.
+        
+        Since your Orchestrator passes an Assistant ID, we will use the retrieve() call to get its instructions first.
+        """
         try:
-            # 1. Create Thread (Stateless for each audit)
-            thread = await self.client.beta.threads.create()
+            # 1. Fetch the System Prompt from the Assistant ID (So you can still edit it in Dashboard)
+            assistant = await self.client.beta.assistants.retrieve(assistant_id)
+            system_prompt = assistant.instructions
 
-            # 2. Add Message
-            await self.client.beta.threads.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=content
+            # 2. Call Chat Completion
+            safe_log(f"{task_name}: Sending request to {assistant.model}...")
+            
+            response = await self.client.chat.completions.create(
+                model=assistant.model, # Uses the model set in Dashboard (gpt-4o-mini)
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content}
+                ],
+                response_format={"type": "json_object"} if json_mode else None,
+                temperature=0.1 # Low temp for strict compliance
             )
 
-            # 3. Create Run with Stream (The Speed Fix)
-            # We use a simple event handler to capture the final text
-            full_response = []
+            # 3. Extract Response
+            result_text = response.choices[0].message.content
             
-            safe_log(f"{task_name}: Starting Stream...")
-            
-            # Helper to collect stream chunks
-            async with self.client.beta.threads.runs.stream(
-                thread_id=thread.id,
-                assistant_id=assistant_id,
-                response_format={"type": "json_object"} if json_mode else "auto"
-            ) as stream:
-                async for event in stream:
-                    # We only care about text deltas to build the final string
-                    if event.event == 'thread.message.delta':
-                        # Extract text delta safely
-                        if event.data.delta.content:
-                            text_chunk = event.data.delta.content[0].text.value
-                            full_response.append(text_chunk)
-                    
-                    # Log errors if run fails
-                    elif event.event == 'thread.run.failed':
-                        return False, None, f"Run Failed: {event.data.last_error.message}"
+            if not result_text:
+                return False, None, "Empty response from OpenAI"
 
-            # 4. Assemble Final Text
-            final_text = "".join(full_response)
-            
-            if not final_text:
-                return False, None, "Stream ended with no content"
-                
-            safe_log(f"{task_name}: Success ({len(final_text)} chars)")
-            return True, final_text, None
+            safe_log(f"{task_name}: Success ({len(result_text)} chars)")
+            return True, result_text, None
 
         except Exception as e:
             safe_log(f"{task_name}: Error - {str(e)}", "ERROR")
