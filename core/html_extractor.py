@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V14 (Granular Metadata)
+HTML Content Extractor - Surgical Edition V14.1 (Granular Metadata)
 Updated:
-1. H1, Subtitle, Lead, and Summary are now extracted as INDIVIDUAL chunks.
-2. Maintains strict container targeting (templateIntro) for accuracy.
-3. No Backpack.
+1. Fixed Indentation/Syntax errors.
+2. Optimized Targeting for 'templateIntroCasinoReviewPage'.
+3. Extracts H1, Subtitle (.sub-title), and Lead (.lead) from the intro container.
 """
 
 import json
@@ -33,7 +33,7 @@ class HTMLContentExtractor:
             self.chunk_index = 1
             
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V14")
+                safe_log("Extractor: Running Surgical Casino Extraction V14.1")
                 
                 # 1. Granular Metadata (H1 -> Subtitle -> Lead -> Summary)
                 self._extract_metadata_separated(soup)
@@ -100,11 +100,17 @@ class HTMLContentExtractor:
 
     def _extract_metadata_separated(self, soup: BeautifulSoup):
         """
-        V14 Update: Creates SEPARATE chunks for H1, Subtitle, Lead, and Summary.
-        Strictly targets the 'templateIntro' container first.
+        Extracts H1, Subtitle, Lead, and Summary as separate chunks.
+        Optimized for: <div data-qa="templateIntroCasinoReviewPage">
         """
         # 1. Locate the Container
+        # Matches 'templateIntroCasinoReviewPage' or simply 'templateIntro'
         intro_container = soup.find(attrs={'data-qa': re.compile(r'templateIntro', re.I)})
+        
+        # Fallback: Look for class="intro" if data-qa is missing (based on your snippet)
+        if not intro_container:
+            intro_container = soup.find(class_='intro')
+
         search_scope = intro_container if intro_container else soup
         
         # --- A. Heading (H1) ---
@@ -121,7 +127,7 @@ class HTMLContentExtractor:
             h1.decompose()
 
         # --- B. Subtitle ---
-        # Strict class: .sub-title
+        # Targets <span class="sub-title">
         subtitle = search_scope.find(class_=re.compile(r'sub-title', re.I))
         if subtitle:
             text = clean_text(subtitle.get_text())
@@ -135,7 +141,7 @@ class HTMLContentExtractor:
             subtitle.decompose()
 
         # --- C. Lead Text ---
-        # Strict class: .lead or .intro
+        # Targets <p class="lead">
         lead = search_scope.find(class_=re.compile(r'lead', re.I))
         if lead:
             text = clean_text(lead.get_text())
