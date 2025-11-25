@@ -21,7 +21,7 @@ from core.parser import ResponseParser
 from utils.helpers import safe_log
 
 # Safety limit
-MAX_CONCURRENT_AUDITS = 3
+MAX_CONCURRENT_AUDITS = 5
 
 class AuditOrchestrator:
     
