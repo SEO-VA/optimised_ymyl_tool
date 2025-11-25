@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Admin Layout
-Updated: Added Translate Toggle and System Diagnostics.
+Admin Layout - Standard Edition
+Restored to stable state (No Translation Toggle).
 """
 
 import streamlit as st
@@ -34,7 +34,6 @@ class AdminLayout:
                 self._render_step1(feature_handler)
             else:
                 self._render_step2(feature_handler)
-                self._render_system_check() # Added Diagnostic Panel
         with col2:
             if st.button("🔄 Reset All", use_container_width=True):
                 self._smart_reset()
@@ -97,56 +96,14 @@ class AdminLayout:
         debug = col1.checkbox("Debug Mode", value=True)
         test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False)
         
-        # --- NEW TOGGLE ---
-        translate_mode = col1.checkbox("🌐 Force Translation", value=True)
-        
         audit_count = 1 if test_mode else 5
         casino_mode = st.session_state.get('global_casino_mode', False)
         
         if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary", use_container_width=True):
             if is_multi:
-                self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count, casino_mode, translate_mode)
+                self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count, casino_mode)
             else:
-                self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count, casino_mode, translate_mode)
-
-    def _render_system_check(self):
-        st.markdown("---")
-        with st.expander("🛠️ System Diagnostics"):
-            if st.button("Run Self-Repair Diagnostic"):
-                with st.status("Running diagnostics...", expanded=True) as status:
-                    # Test 1: Model Import
-                    try:
-                        from core.models import Violation
-                        st.write("✅ Model Import: Success")
-                    except Exception as e:
-                        st.error(f"❌ Model Import Failed: {e}")
-                        return
-
-                    # Test 2: Model Fields
-                    try:
-                        v = Violation(
-                            problematic_text="test", violation_type="test", explanation="test",
-                            guideline_section="1", page_number=1, severity="medium", suggested_rewrite="test",
-                            translation="test", rewrite_translation="test", chunk_language="English"
-                        )
-                        st.write("✅ Violation Model Compatibility: Success (New fields supported)")
-                    except TypeError as e:
-                        st.error(f"❌ Violation Model Mismatch: {e}")
-                        return
-
-                    # Test 3: Parser
-                    try:
-                        from core.parser import ResponseParser
-                        TEST_JSON = '{"violations": [{"problematic_text": "T", "violation_type": "T", "explanation": "E", "severity": "low", "suggested_rewrite": "S", "guideline_section": "1", "page_number": 0}]}'
-                        results = ResponseParser.parse_to_violations(TEST_JSON)
-                        if len(results) == 1:
-                            st.write(f"✅ Parser Logic: Success")
-                        else:
-                            st.error(f"❌ Parser Logic Failed")
-                    except Exception as e:
-                        st.error(f"❌ Parser Crash: {e}")
-                    
-                    status.update(label="Diagnostic Complete", state="complete")
+                self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count, casino_mode)
 
     def _render_single_preview(self):
         content = st.session_state.get('extracted_content', '')
@@ -154,18 +111,25 @@ class AdminLayout:
             st.code(content, language='json')
 
     def _render_multi_preview(self):
-        pass # Simplify for brevity
+        content_json = st.session_state.get('admin_multi_extracted', '{}')
+        try:
+            files = json.loads(content_json).get('files', {})
+            preview_file = st.selectbox("Inspect file:", list(files.keys()))
+            if preview_file:
+                with st.expander(f"View: {preview_file}"):
+                    st.code(files[preview_file], language='json')
+        except: pass
 
     def _sanitize_for_display(self, result_dict):
         clean = result_dict.copy()
         if 'word_bytes' in clean and clean['word_bytes']:
-            clean['word_bytes'] = "<Word Doc>"
+            clean['word_bytes'] = "<Word Document>"
         return clean
 
-    def _run_single(self, content, source, debug, count, casino_mode, translate_mode):
+    def _run_single(self, content, source, debug, count, casino_mode):
         with st.status(f"Analyzing... ({count} audits)") as status:
-            # Pass translate_mode
-            result = processor.process_single_file(content, source, casino_mode, debug, count, translate_mode)
+            # Removed translate_mode argument
+            result = processor.process_single_file(content, source, casino_mode, debug, count)
             
             if result['success']:
                 status.update(label="Done", state="complete")
@@ -174,13 +138,25 @@ class AdminLayout:
                 if result.get('word_bytes'):
                     st.download_button("📄 Download Report", result['word_bytes'], f"Report_{source}.docx", type="primary", use_container_width=True)
                 
-                if debug:
+                if debug and result.get('debug_info'):
                     st.divider()
                     st.subheader("🔍 AI Raw Output Inspector")
-                    if result.get('debug_info'):
-                        st.json(self._sanitize_for_display(result).get('violations', []))
+                    st.json(self._sanitize_for_display(result).get('violations', []))
             else:
                 st.error(result.get('error'))
 
-    def _run_multi(self, content_json, debug, count, casino_mode, translate_mode):
-        pass # Simplify for brevity
+    def _run_multi(self, content_json, debug, count, casino_mode):
+        files = json.loads(content_json).get('files', {})
+        with st.status(f"Analyzing {len(files)} files...") as status:
+            # Removed translate_mode argument
+            results = processor.process_multi_file(files, casino_mode, debug, count)
+            status.update(label="Done", state="complete")
+            trigger_completion_notification()
+            
+            for fname, res in results.items():
+                with st.expander(f"{fname} ({'Success' if res['success'] else 'Failed'})"):
+                    if res['success']:
+                        if res.get('word_bytes'):
+                            st.download_button(f"Download {fname}", res['word_bytes'], f"{fname}.docx", key=f"dl_{fname}")
+                    else:
+                        st.error(res.get('error'))
