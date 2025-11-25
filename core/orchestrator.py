@@ -24,7 +24,7 @@ class AuditOrchestrator:
     
     def __init__(self):
         try:
-            # Load IDs Only
+            # Load IDs Only (Prompts are in the Dashboard now)
             self.settings = {
                 'regular_assistant_id': st.secrets["regular_assistant_id"],
                 'casino_assistant_id': st.secrets["casino_assistant_id"],
@@ -37,9 +37,10 @@ class AuditOrchestrator:
     async def run_analysis(self, content_json: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
         start_time = time.time()
         
+        # 1. Select Assistant ID
         target_assistant_id = self.settings['casino_assistant_id'] if casino_mode else self.settings['regular_assistant_id']
         
-        # Prepare Payload
+        # 2. Prepare Payload
         analyzer_payload_json, global_context_dict = self._build_analyzer_payload(content_json)
         
         if debug_mode:
@@ -48,16 +49,16 @@ class AuditOrchestrator:
         
         safe_log(f"Orchestrator: Starting {audit_count} audits...")
 
-        # Run Parallel Audits
+        # 3. Run Parallel Audits
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
 
         async def _run_audit(index):
             async with semaphore:
                 await asyncio.sleep(index * 1.0) 
+                # FIX: Calling 'get_assistant_response' instead of 'get_response_async'
                 return await openai_service.get_assistant_response(
                     content=analyzer_payload_json,
                     assistant_id=target_assistant_id,
-                    # removed system_instruction arg
                     task_name=f"Audit #{index+1}"
                 )
 
@@ -90,7 +91,7 @@ class AuditOrchestrator:
         if successful_audits == 0:
             return {"success": False, "error": "All audits failed."}
 
-        # Deduplication
+        # 4. Deduplication
         dedup_raw_text = "Skipped"
         final_violations = []
         
@@ -103,7 +104,7 @@ class AuditOrchestrator:
             final_violations = []
             dedup_raw_text = "Skipped (No violations found)"
 
-        # Report
+        # 5. Report
         report_md = self._generate_markdown(final_violations, successful_audits)
         
         debug_package = None
@@ -129,7 +130,6 @@ class AuditOrchestrator:
         }
 
     def _build_analyzer_payload(self, content_json: str) -> Tuple[str, Dict]:
-        # Same as before
         h1_text = "Unknown Title"
         try:
             data = json.loads(content_json)
@@ -163,10 +163,10 @@ class AuditOrchestrator:
             "violations_input": [v.to_dict() for v in violations]
         }
         
+        # FIX: Calling 'get_assistant_response' instead of 'get_response_async'
         success, text, error = await openai_service.get_assistant_response(
             content=json.dumps(payload, indent=2),
             assistant_id=self.settings['deduplicator_assistant_id'],
-            # removed system_instruction arg
             task_name="Deduplicator",
             timeout_seconds=400
         )
@@ -179,8 +179,6 @@ class AuditOrchestrator:
         safe_log(f"Deduplication failed: {error}", "ERROR")
         return violations, f"FAILED: {error}"
 
-    # ... Keep helper methods (_normalize_key, _restore_translations, _generate_markdown) ...
-    
     def _normalize_key(self, text: str) -> str:
         if not text: return ""
         return re.sub(r'[\W_]+', '', text.lower())[:100]
