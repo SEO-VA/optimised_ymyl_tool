@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Audit Orchestrator - Standard Edition
+Audit Orchestrator - Dashboard Prompt Edition
 """
 
 import asyncio
@@ -38,7 +38,8 @@ class AuditOrchestrator:
                 return await openai_service.get_assistant_response(
                     content=analyzer_payload_json,
                     assistant_id=target_assistant_id,
-                    task_name=f"Audit #{index+1}"
+                    task_name=f"Audit #{index+1}",
+                    force_tool=True # <--- CRITICAL: Forces Analyzer to search PDF
                 )
 
         tasks = [_run_audit(i) for i in range(audit_count)]
@@ -102,11 +103,14 @@ class AuditOrchestrator:
 
     async def _run_deduplication(self, violations: List[Violation], context_backpack: Dict) -> Tuple[List[Violation], str]:
         payload = {"context_backpack": context_backpack, "violations_input": [v.to_dict() for v in violations]}
+        
+        # DO NOT force tool here. Deduplicator is logic-only.
         success, text, error = await openai_service.get_assistant_response(
             content=json.dumps(payload, indent=2),
             assistant_id=self.settings['deduplicator_assistant_id'],
             task_name="Deduplicator",
-            timeout_seconds=400
+            timeout_seconds=400,
+            force_tool=False 
         )
         if success and text:
             return ResponseParser.parse_to_violations(text), text
@@ -135,7 +139,6 @@ class AuditOrchestrator:
             count += 1
         return "\n".join(md)
 
-# THIS FUNCTION MUST BE AT THE BOTTOM OF THE FILE
 async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
     orchestrator = AuditOrchestrator()
     return await orchestrator.run_analysis(content, casino_mode, debug_mode, audit_count)
