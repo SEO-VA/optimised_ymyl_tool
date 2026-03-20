@@ -21,13 +21,13 @@ class UserLayout:
         
         with col_opts:
             st.markdown("### ⚙️ Options")
-            casino_mode = st.checkbox(
-                "🎰 Casino Mode", 
-                value=False,
-                help="Enables specialized 'Surgical Extraction'.",
+            topic_description = st.text_input(
+                "Content topic",
+                value="Online casino affiliate site",
+                help="Describe the type of content being analyzed. Used to adapt the audit prompts.",
                 disabled=is_processing
             )
-            input_data['casino_mode'] = casino_mode
+            input_data['topic_description'] = topic_description
 
         st.markdown("---")
         is_multi = feature_handler.is_multi_file_input(input_data) if hasattr(feature_handler, 'is_multi_file_input') else False
@@ -44,25 +44,25 @@ class UserLayout:
 
         if state_manager.is_processing and not state_manager.stop_signal:
             if is_multi:
-                self._run_multi_file(feature_handler, input_data, casino_mode)
+                self._run_multi_file(feature_handler, input_data, topic_description)
             else:
-                self._run_single_file(feature_handler, input_data, analysis_key, casino_mode)
+                self._run_single_file(feature_handler, input_data, analysis_key, topic_description)
 
         if st.session_state.get(f'{analysis_key}_complete'):
             self._show_single_file_results(analysis_key)
 
-    def _run_single_file(self, feature_handler, input_data, analysis_key, casino_mode):
+    def _run_single_file(self, feature_handler, input_data, analysis_key, topic_description):
         try:
             with st.status("🚀 Starting Analysis...", expanded=True) as status:
                 st.write("📄 Extracting content...")
                 success, content, err = feature_handler.extract_content(input_data)
                 if not success: raise ValueError(err)
-                
-                st.write("🤖 Running 5 Parallel AI Audits...")
+
+                st.write("🤖 Running 3-Stage AI Analysis...")
                 result = processor.process_single_file(
                     content=content,
                     source_description=feature_handler.get_source_description(input_data),
-                    casino_mode=casino_mode
+                    topic_description=topic_description
                 )
                 
                 if not result.get('success'): raise ValueError(result.get('error'))
@@ -79,7 +79,7 @@ class UserLayout:
             st.error(f"❌ {str(e)}")
             state_manager.is_processing = False
 
-    def _run_multi_file(self, feature_handler, input_data, casino_mode): pass
+    def _run_multi_file(self, feature_handler, input_data, topic_description): pass
     def _show_single_file_results(self, key):
         st.success("✅ Analysis Ready")
         if st.session_state.get(f'{key}_word_bytes'):

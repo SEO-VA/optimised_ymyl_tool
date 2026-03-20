@@ -48,6 +48,7 @@ class Violation:
     
     # Internal tracking (not from AI)
     source_audit_id: Optional[int] = None
+    source_lens: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert back to dictionary for JSON serialization"""
@@ -62,7 +63,8 @@ class Violation:
             # Include new fields in dictionary output
             "translation": self.translation,
             "rewrite_translation": self.rewrite_translation,
-            "chunk_language": self.chunk_language
+            "chunk_language": self.chunk_language,
+            "source_lens": self.source_lens,
         }
 
 @dataclass

@@ -40,7 +40,7 @@ class AdminLayout:
                 self._smart_reset()
 
     def _smart_reset(self):
-        keys_to_keep = ['authenticated', 'username', 'global_casino_mode']
+        keys_to_keep = ['authenticated', 'username', 'global_topic_description']
         for key in list(st.session_state.keys()):
             if key not in keys_to_keep:
                 del st.session_state[key]
@@ -51,15 +51,14 @@ class AdminLayout:
         input_data = handler.get_input_interface()
         
         st.markdown("---")
-        col_opt, col_blank = st.columns([1, 1])
-        with col_opt:
-            current_mode = st.session_state.get('global_casino_mode', False)
-            casino_mode = st.checkbox(
-                "🎰 Casino Mode (Surgical Extraction)", 
-                value=current_mode
-            )
-            st.session_state['global_casino_mode'] = casino_mode
-            input_data['casino_mode'] = casino_mode
+        current_topic = st.session_state.get('global_topic_description', 'Online casino affiliate site')
+        topic_description = st.text_input(
+            "Content topic",
+            value=current_topic,
+            help="Describe the type of content being analyzed. Injected into all audit prompts."
+        )
+        st.session_state['global_topic_description'] = topic_description
+        input_data['topic_description'] = topic_description
         
         is_multi = handler.is_multi_file_input(input_data) if hasattr(handler, 'is_multi_file_input') else False
         st.markdown("---")
@@ -93,18 +92,14 @@ class AdminLayout:
 
         st.divider()
 
-        col1, col2 = st.columns(2)
-        debug = col1.checkbox("Debug Mode", value=True)
-        test_mode = col2.checkbox("🧪 Test Mode (1 Audit)", value=False)
-        
-        audit_count = 1 if test_mode else 5
-        casino_mode = st.session_state.get('global_casino_mode', False)
-        
-        if st.button(f"🚀 Run Analysis ({audit_count} Audits)", type="primary", use_container_width=True):
+        debug = st.checkbox("Debug Mode", value=True)
+        topic_description = st.session_state.get('global_topic_description', 'Online casino affiliate site')
+
+        if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
             if is_multi:
-                self._run_multi(st.session_state['admin_multi_extracted'], debug, audit_count, casino_mode)
+                self._run_multi(st.session_state['admin_multi_extracted'], debug, topic_description)
             else:
-                self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, audit_count, casino_mode)
+                self._run_single(st.session_state['extracted_content'], st.session_state['source_info'], debug, topic_description)
 
     def _render_single_preview(self):
         content = st.session_state.get('extracted_content', '')
@@ -139,10 +134,9 @@ class AdminLayout:
             return [self._to_display_safe(item) for item in value]
         return value
 
-    def _run_single(self, content, source, debug, count, casino_mode):
-        with st.status(f"Analyzing... ({count} audits)") as status:
-            # Removed translate_mode argument
-            result = processor.process_single_file(content, source, casino_mode, debug, count)
+    def _run_single(self, content, source, debug, topic_description):
+        with st.status("Analyzing... (3-stage pipeline)") as status:
+            result = processor.process_single_file(content, source, topic_description, debug)
             
             if result['success']:
                 status.update(label="Done", state="complete")
@@ -153,22 +147,31 @@ class AdminLayout:
                 
                 if debug and result.get('debug_info'):
                     st.divider()
-                    st.subheader("🔍 AI Raw Output Inspector")
-                    st.json(self._sanitize_for_display({
-                        "debug_info": result.get("debug_info"),
-                        "violations": result.get("violations", []),
-                        "processing_time": result.get("processing_time"),
-                        "total_violations_found": result.get("total_violations_found"),
-                        "unique_violations": result.get("unique_violations"),
-                    }))
+                    st.subheader("🔍 Pipeline Debug Inspector")
+                    debug_info = result.get("debug_info", {})
+
+                    with st.expander(f"Stage 1: Detection ({len(debug_info.get('detection', []))} lenses)", expanded=False):
+                        st.json(self._sanitize_for_display(debug_info.get("detection", [])))
+
+                    with st.expander("Stage 2: Verification", expanded=False):
+                        st.json(self._sanitize_for_display(debug_info.get("verification", {})))
+
+                    with st.expander("Stage 3: Finalization", expanded=False):
+                        st.json(self._sanitize_for_display(debug_info.get("finalization", {})))
+
+                    with st.expander("Summary", expanded=True):
+                        st.json(self._sanitize_for_display({
+                            "processing_time": result.get("processing_time"),
+                            "total_candidates": result.get("total_violations_found"),
+                            "unique_violations": result.get("unique_violations"),
+                        }))
             else:
                 st.error(result.get('error'))
 
-    def _run_multi(self, content_json, debug, count, casino_mode):
+    def _run_multi(self, content_json, debug, topic_description):
         files = json.loads(content_json).get('files', {})
         with st.status(f"Analyzing {len(files)} files...") as status:
-            # Removed translate_mode argument
-            results = processor.process_multi_file(files, casino_mode, debug, count)
+            results = processor.process_multi_file(files, topic_description, debug)
             status.update(label="Done", state="complete")
             trigger_completion_notification()
             

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Audit Orchestrator - Dashboard Prompt Edition
+Audit Orchestrator - 3-Stage Pipeline (Detect → Verify → Finalize)
 """
 
 import asyncio
@@ -14,132 +14,198 @@ from core.service import openai_service
 from core.parser import ResponseParser
 from utils.helpers import safe_log
 
-MAX_CONCURRENT_AUDITS = 5
+DETECTION_MODEL = "gpt-5.4-nano"
+VERIFICATION_MODEL = "gpt-5.4-mini"
+FINALIZATION_MODEL = "gpt-5.4-nano"
+
 
 class AuditOrchestrator:
     def __init__(self, service=None, settings: Optional[Dict[str, Any]] = None):
         self.service = service or openai_service
         self.settings = settings or {
-            'regular_instructions': st.secrets.get("regular_instructions"),
-            'casino_instructions': st.secrets.get("casino_instructions"),
-            'deduplicator_instructions': st.secrets.get("deduplicator_instructions"),
-            'regular_vector_store_id': st.secrets.get("regular_vector_store_id"),
+            'lens_financial_instructions': st.secrets.get("lens_financial_instructions"),
+            'lens_safety_instructions': st.secrets.get("lens_safety_instructions"),
+            'lens_trust_instructions': st.secrets.get("lens_trust_instructions"),
+            'verifier_instructions': st.secrets.get("verifier_instructions"),
+            'finalizer_instructions': st.secrets.get("finalizer_instructions"),
+            'ymyl_knowledge_vector_store_id': st.secrets.get("ymyl_knowledge_vector_store_id"),
             'casino_vector_store_id': st.secrets.get("casino_vector_store_id"),
         }
 
-    async def run_analysis(self, content_json: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
+    async def run_analysis(self, content_json: str, topic_description: str, debug_mode: bool) -> Dict[str, Any]:
         start_time = time.time()
-        config_error = self._validate_configuration(casino_mode)
+        config_error = self._validate_configuration()
         if config_error:
             safe_log(f"Orchestrator: {config_error}", "ERROR")
             return {"success": False, "error": config_error}
 
-        analyzer_payload_json, global_context_dict = self._build_analyzer_payload(content_json)
-        
-        if casino_mode:
-            target_instructions = self.settings['casino_instructions']
-            target_vs_ids = [self.settings['casino_vector_store_id']]
-        else:
-            target_instructions = self.settings['regular_instructions']
-            target_vs_ids = [self.settings['regular_vector_store_id']]
+        payload_json, global_context = self._build_analyzer_payload(content_json, topic_description)
+        knowledge_vs_ids = [self.settings['ymyl_knowledge_vector_store_id']]
+        full_pdf_vs_ids = [self.settings['casino_vector_store_id']]
 
-        safe_log(f"Orchestrator: Starting {audit_count} audits...")
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_AUDITS)
+        # ── STAGE 1: Detection (3 lenses in parallel) ────────────────────────
+        lens_configs = [
+            ("financial_accuracy", self.settings['lens_financial_instructions']),
+            ("safety_responsibility", self.settings['lens_safety_instructions']),
+            ("trust_quality", self.settings['lens_trust_instructions']),
+        ]
 
-        async def _run_audit(index):
-            async with semaphore:
-                await asyncio.sleep(index * 1.0)
-                return await self.service.get_response(
-                    content=analyzer_payload_json,
-                    instructions=target_instructions,
-                    task_name=f"Audit #{index+1}",
-                    vector_store_ids=target_vs_ids,
-                    force_tool=True,  # CRITICAL: Forces Analyzer to search PDF
+        safe_log("Orchestrator: Stage 1 — Running 3 detection lenses in parallel...")
+        detection_tasks = [
+            self.service.get_response(
+                content=payload_json,
+                instructions=self._inject_topic(instructions, topic_description),
+                task_name=f"Lens:{name}",
+                vector_store_ids=knowledge_vs_ids,
+                force_tool=True,
+                model_override=DETECTION_MODEL,
+            )
+            for name, instructions in lens_configs
+        ]
+        detection_results = await asyncio.gather(*detection_tasks)
+
+        all_candidates: List[Violation] = []
+        raw_debug_detection = []
+        successful_lenses = 0
+
+        for (lens_name, _), result in zip(lens_configs, detection_results):
+            violations, parse_success, parse_source = self._extract_violations(result)
+            if result.success and parse_success and isinstance(violations, list):
+                successful_lenses += 1
+                for v in violations:
+                    v.source_lens = lens_name
+                all_candidates.extend(violations)
+            else:
+                safe_log(f"Lens:{lens_name} failed: {result.error_message or 'parse error'}", "WARNING")
+            if debug_mode:
+                raw_debug_detection.append(
+                    self._build_debug_entry(lens_name, result, violations if isinstance(violations, list) else [], parse_success, parse_source)
                 )
 
-        tasks = [_run_audit(i) for i in range(audit_count)]
-        raw_results = await asyncio.gather(*tasks)
-        
-        all_violations = []
-        successful_audits = 0
-        raw_debug_data = []
+        if successful_lenses == 0:
+            debug_package = {"detection": raw_debug_detection} if debug_mode else None
+            return {"success": False, "error": "All detection lenses failed.", "debug_info": debug_package}
 
-        for i, result in enumerate(raw_results):
-            audit_id = i + 1
-            violations, parse_success, parse_source = self._extract_violations(result)
-            if result.success and parse_success:
-                if isinstance(violations, list):
-                    successful_audits += 1
-                    for v in violations: v.source_audit_id = i + 1
-                    all_violations.extend(violations)
-                if debug_mode:
-                    raw_debug_data.append(self._build_debug_entry(audit_id, result, violations, parse_success, parse_source))
+        safe_log(f"Orchestrator: Stage 1 complete — {len(all_candidates)} candidates from {successful_lenses} lenses.")
+
+        # ── STAGE 2: Verification (single batch call) ─────────────────────────
+        verified_violations: List[Violation] = []
+        verifier_debug: Dict[str, Any] = {"status": "skipped"}
+
+        if all_candidates:
+            safe_log(f"Orchestrator: Stage 2 — Verifying {len(all_candidates)} candidates...")
+            verifier_payload = json.dumps({
+                "global_context": global_context,
+                "original_content": content_json,
+                "candidates": [v.to_dict() for v in all_candidates],
+            }, indent=2)
+
+            verifier_result = await self.service.get_response(
+                content=verifier_payload,
+                instructions=self.settings['verifier_instructions'],
+                task_name="Verifier",
+                vector_store_ids=full_pdf_vs_ids,
+                force_tool=True,
+                model_override=VERIFICATION_MODEL,
+                timeout_seconds=400,
+            )
+
+            parsed, verify_ok, verify_source = self._extract_violations(verifier_result)
+            if verifier_result.success and verify_ok and isinstance(parsed, list):
+                verified_violations = parsed
             else:
-                safe_log(f"Audit #{audit_id} failed: {result.error_message or 'Unknown failure'}", "WARNING")
-                if debug_mode:
-                    raw_debug_data.append(self._build_debug_entry(audit_id, result, violations, parse_success, parse_source))
+                safe_log("Verifier failed — falling back to raw candidates.", "WARNING")
+                verified_violations = all_candidates
 
-        if successful_audits == 0:
-            debug_package = {"audits": raw_debug_data} if debug_mode else None
-            return {"success": False, "error": "All audits failed.", "debug_info": debug_package}
+            verifier_debug = self._build_debug_entry(
+                "verifier", verifier_result,
+                verified_violations, verify_ok, verify_source
+            )
+            safe_log(f"Orchestrator: Stage 2 complete — {len(verified_violations)} violations survived verification.")
 
-        # Deduplication (Always runs)
-        final_violations = []
-        dedup_result = {"status": "skipped", "raw_response": "Skipped"}
-        if all_violations:
-            final_violations, dedup_result = await self._run_deduplication(all_violations, global_context_dict)
-        
-        report_md = self._generate_markdown(final_violations, successful_audits)
-        
+        # ── STAGE 3: Finalization ─────────────────────────────────────────────
+        final_violations: List[Violation] = []
+        finalizer_debug: Dict[str, Any] = {"status": "skipped"}
+
+        if verified_violations:
+            safe_log(f"Orchestrator: Stage 3 — Finalizing {len(verified_violations)} violations...")
+            finalizer_payload = json.dumps({
+                "context": global_context,
+                "violations_input": [v.to_dict() for v in verified_violations],
+            }, indent=2)
+
+            finalizer_result = await self.service.get_response(
+                content=finalizer_payload,
+                instructions=self.settings['finalizer_instructions'],
+                task_name="Finalizer",
+                vector_store_ids=None,
+                force_tool=False,
+                model_override=FINALIZATION_MODEL,
+                timeout_seconds=300,
+            )
+
+            parsed, final_ok, final_source = self._extract_violations(finalizer_result)
+            if finalizer_result.success and final_ok and isinstance(parsed, list):
+                final_violations = parsed
+            else:
+                safe_log("Finalizer failed — falling back to verified violations.", "WARNING")
+                final_violations = verified_violations
+
+            finalizer_debug = self._build_debug_entry(
+                "finalizer", finalizer_result,
+                final_violations, final_ok, final_source
+            )
+            safe_log(f"Orchestrator: Stage 3 complete — {len(final_violations)} unique violations.")
+
+        report_md = self._generate_markdown(final_violations, successful_lenses)
+
         debug_package = None
         if debug_mode:
-            debug_package = {"audits": raw_debug_data, "deduplicator": dedup_result}
+            debug_package = {
+                "detection": raw_debug_detection,
+                "verification": verifier_debug,
+                "finalization": finalizer_debug,
+            }
 
         return {
-            "success": True, "report": report_md, "violations": final_violations,
-            "processing_time": time.time() - start_time, "total_violations_found": len(all_violations),
-            "unique_violations": len(final_violations), "debug_info": debug_package, "word_bytes": None
+            "success": True,
+            "report": report_md,
+            "violations": final_violations,
+            "processing_time": time.time() - start_time,
+            "total_violations_found": len(all_candidates),
+            "unique_violations": len(final_violations),
+            "debug_info": debug_package,
+            "word_bytes": None,
         }
 
-    def _build_analyzer_payload(self, content_json: str) -> Tuple[str, Dict]:
+    def _inject_topic(self, instructions: str, topic_description: str) -> str:
+        return instructions.replace("{topic_description}", topic_description or "online casino affiliate site")
+
+    def _build_analyzer_payload(self, content_json: str, topic_description: str) -> Tuple[str, Dict]:
         h1_text = "Unknown Title"
         try:
             data = json.loads(content_json)
             for chunk in data.get("big_chunks", [])[:3]:
                 for item in chunk.get("small_chunks", []):
-                    if item.startswith("H1:"): h1_text = item.replace("H1:", "").strip(); break
-                if h1_text != "Unknown Title": break
-        except: pass
+                    if item.startswith("H1:"):
+                        h1_text = item.replace("H1:", "").strip()
+                        break
+                if h1_text != "Unknown Title":
+                    break
+        except Exception:
+            pass
 
         global_context = {
             "primary_topic": h1_text,
-            "content_type": "Commercial Review", 
+            "content_type": topic_description or "Commercial Review",
             "ymyl_category": "Financial/Gambling",
-            "global_assumptions": {"site_identity": "Compliant", "affiliate_disclosure": "Compliant", "site_reputation": "Neutral/Good"}
+            "global_assumptions": {
+                "affiliate_disclosure": "Compliant",
+                "site_reputation": "Neutral/Good",
+            },
         }
         payload = {"global_context": global_context, "chunk_text": content_json}
         return json.dumps(payload, indent=2), global_context
-
-    async def _run_deduplication(self, violations: List[Violation], context_backpack: Dict) -> Tuple[List[Violation], Dict[str, Any]]:
-        payload = {"context_backpack": context_backpack, "violations_input": [v.to_dict() for v in violations]}
-        
-        # DO NOT force tool here. Deduplicator is logic-only.
-        result = await self.service.get_response(
-            content=json.dumps(payload, indent=2),
-            instructions=self.settings['deduplicator_instructions'],
-            task_name="Deduplicator",
-            timeout_seconds=400,
-            vector_store_ids=None,
-            force_tool=False,
-        )
-        parsed_violations, parse_success, parse_source = self._extract_violations(result)
-        debug_payload = self._build_debug_entry(0, result, parsed_violations, parse_success, parse_source)
-        debug_payload["task"] = "deduplicator"
-
-        if result.success and parse_success:
-            return parsed_violations, debug_payload
-        debug_payload["fallback_applied"] = True
-        return violations, debug_payload
 
     def _extract_violations(self, result: OpenAIResponseResult) -> Tuple[List[Violation], bool, str]:
         if result.parsed_payload is not None:
@@ -151,13 +217,13 @@ class AuditOrchestrator:
         return [], False, "none"
 
     def _build_debug_entry(self,
-                           audit_id: int,
+                           stage_name: str,
                            result: OpenAIResponseResult,
                            violations: List[Violation],
                            parse_success: bool,
                            parse_source: str) -> Dict[str, Any]:
         return {
-            "audit_number": audit_id,
+            "stage": stage_name,
             "transport_success": result.success,
             "status": result.status,
             "error_type": result.error_type,
@@ -172,49 +238,54 @@ class AuditOrchestrator:
             "raw_output_items": result.raw_output_items,
         }
 
-    def _validate_configuration(self, casino_mode: bool) -> Optional[str]:
-        required_settings = {
-            "regular_instructions": self.settings.get("regular_instructions"),
-            "casino_instructions": self.settings.get("casino_instructions"),
-            "deduplicator_instructions": self.settings.get("deduplicator_instructions"),
+    def _validate_configuration(self) -> Optional[str]:
+        required = {
+            "lens_financial_instructions": self.settings.get("lens_financial_instructions"),
+            "lens_safety_instructions": self.settings.get("lens_safety_instructions"),
+            "lens_trust_instructions": self.settings.get("lens_trust_instructions"),
+            "verifier_instructions": self.settings.get("verifier_instructions"),
+            "finalizer_instructions": self.settings.get("finalizer_instructions"),
+            "ymyl_knowledge_vector_store_id": self.settings.get("ymyl_knowledge_vector_store_id"),
+            "casino_vector_store_id": self.settings.get("casino_vector_store_id"),
         }
-        target_key = "casino_vector_store_id" if casino_mode else "regular_vector_store_id"
-        required_settings[target_key] = self.settings.get(target_key)
-
-        missing = [key for key, value in required_settings.items() if not value]
+        missing = [k for k, v in required.items() if not v]
         service_error = self.service.validate_runtime_configuration(
-            vector_store_ids=[self.settings.get(target_key)] if target_key in required_settings else None
+            vector_store_ids=[self.settings.get("ymyl_knowledge_vector_store_id")]
         )
         if service_error:
             missing.append(service_error)
-
         if missing:
-            return "Configuration error: " + ", ".join(str(item) for item in missing)
+            return "Configuration error: " + ", ".join(str(m) for m in missing)
         return None
 
-    def _generate_markdown(self, violations: List[Violation], audit_count: int) -> str:
+    def _generate_markdown(self, violations: List[Violation], lens_count: int) -> str:
         date_str = datetime.now().strftime("%Y-%m-%d")
-        md = [f"# YMYL Compliance Report\n**Date:** {date_str}\n**Audits Performed:** {audit_count}\n---"]
+        md = [f"# YMYL Compliance Report\n**Date:** {date_str}\n**Detection Lenses:** {lens_count}\n---"]
         if not violations:
-            md.append("\n✅ **No violations found.**"); return "\n".join(md)
-            
+            md.append("\n✅ **No violations found.")
+            return "\n".join(md)
+
         count = 1
         for v in violations:
-            if "no violation" in v.violation_type.lower(): continue
+            if "no violation" in v.violation_type.lower():
+                continue
             emoji = "🔴" if v.severity.value == "critical" else "🟠" if v.severity.value in ["high", "medium"] else "🔵"
-            
+
             md.append(f"### {count}. {emoji} {v.violation_type}")
             md.append(f"**Severity:** {v.severity.value.title()}")
             md.append(f"**Problematic Text:** \"{v.problematic_text}\"")
-            if v.translation: md.append(f"> 🌐 **Translation:** _{v.translation}_")
+            if v.translation:
+                md.append(f"> 🌐 **Translation:** _{v.translation}_")
             md.append(f"**Explanation:** {v.explanation}")
             md.append(f"**Guideline:** Section {v.guideline_section} (Page {v.page_number})")
             md.append(f"**Suggested Fix:** \"{v.suggested_rewrite}\"")
-            if v.rewrite_translation: md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
+            if v.rewrite_translation:
+                md.append(f"> 🛠️ **Fix Translation:** _{v.rewrite_translation}_")
             md.append("\n---\n")
             count += 1
         return "\n".join(md)
 
-async def analyze_content(content: str, casino_mode: bool, debug_mode: bool, audit_count: int = 5) -> Dict[str, Any]:
+
+async def analyze_content(content: str, topic_description: str, debug_mode: bool) -> Dict[str, Any]:
     orchestrator = AuditOrchestrator()
-    return await orchestrator.run_analysis(content, casino_mode, debug_mode, audit_count)
+    return await orchestrator.run_analysis(content, topic_description, debug_mode)

@@ -23,6 +23,7 @@ class ViolationSchema(BaseModel):
     translation: Optional[str]
     rewrite_translation: Optional[str]
     chunk_language: str
+    source_lens: Optional[str]
 
 
 class ViolationsResponseSchema(BaseModel):

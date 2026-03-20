@@ -41,17 +41,19 @@ class OpenAIService:
                            task_name: str = "Audit",
                            timeout_seconds: int = 300,
                            vector_store_ids: Optional[List[str]] = None,
-                           force_tool: bool = False) -> OpenAIResponseResult:
+                           force_tool: bool = False,
+                           model_override: Optional[str] = None) -> OpenAIResponseResult:
         """
         Uses the Responses API with structured outputs and detailed transport metadata.
         """
+        active_model = model_override or self.model
         config_error = self.validate_runtime_configuration(vector_store_ids=vector_store_ids)
         request_meta = self._build_request_meta(
             task_name=task_name,
             timeout_seconds=timeout_seconds,
             vector_store_ids=vector_store_ids,
             force_tool=force_tool,
-            model=self.model,
+            model=active_model,
         )
         if config_error:
             return OpenAIResponseResult(
@@ -63,7 +65,7 @@ class OpenAIService:
                 tool_summary=self._empty_tool_summary(vector_store_ids=vector_store_ids, force_tool=force_tool),
             )
 
-        model_candidates = self._get_model_candidates()
+        model_candidates = self._get_model_candidates(active_model)
         try:
             for idx, candidate_model in enumerate(model_candidates):
                 try:
@@ -325,12 +327,13 @@ class OpenAIService:
             "force_tool": force_tool,
         }
 
-    def _get_model_candidates(self) -> List[str]:
-        if not self.model:
+    def _get_model_candidates(self, model: Optional[str] = None) -> List[str]:
+        target = model or self.model
+        if not target:
             return []
-        if self.model == "gpt-4o":
-            return ["gpt-4o", "gpt-4o-2024-08-06"]
-        return [self.model]
+        if target == "gpt-4o":
+            return [target, "gpt-4o-2024-08-06"]
+        return [target]
 
     def _should_retry_with_snapshot(self, error: BadRequestError) -> bool:
         message = str(error).lower()

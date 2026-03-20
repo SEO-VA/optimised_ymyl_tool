@@ -11,14 +11,14 @@ from docx.shared import RGBColor, Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from utils.helpers import safe_log
 
-def generate_word_report(markdown_content: str, title: str, casino_mode: bool) -> bytes:
+def generate_word_report(markdown_content: str, title: str, topic_description: str = "YMYL Audit") -> bytes:
     """Converts markdown string to docx bytes."""
     try:
         doc = Document()
-        
+
         # Metadata
         doc.core_properties.title = title
-        doc.core_properties.subject = "Casino Audit" if casino_mode else "YMYL Audit"
+        doc.core_properties.subject = topic_description or "YMYL Audit"
         
         # Default Style
         style = doc.styles['Normal']
