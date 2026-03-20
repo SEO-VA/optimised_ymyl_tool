@@ -8,6 +8,7 @@ import streamlit as st
 from utils.feature_registry import FeatureRegistry
 from core.processor import processor
 from utils.helpers import trigger_completion_notification
+from ui.content_preview import render_content_preview
 import json
 from dataclasses import is_dataclass, asdict
 
@@ -103,7 +104,10 @@ class AdminLayout:
 
     def _render_single_preview(self):
         content = st.session_state.get('extracted_content', '')
-        with st.expander("👁️ View Extracted JSON", expanded=True):
+        tab_visual, tab_json = st.tabs(["📋 Visual Preview", "🔧 Raw JSON"])
+        with tab_visual:
+            render_content_preview(content)
+        with tab_json:
             st.code(content, language='json')
 
     def _render_multi_preview(self):

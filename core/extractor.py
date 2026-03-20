@@ -7,7 +7,7 @@ Updated: Accepts casino_mode flag.
 import requests
 from typing import Tuple, Optional
 from core.html_extractor import extract_html_content
-from utils.helpers import safe_log
+from utils.helpers import safe_log, extract_domain
 
 DEFAULT_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -23,7 +23,8 @@ def extract_url_content(url: str, casino_mode: bool = False) -> Tuple[bool, Opti
         if len(response.content) > 5 * 1024 * 1024:
             return False, None, "Content too large (>5MB)"
 
-        return extract_html_content(response.text, casino_mode)
+        base_domain = extract_domain(url)
+        return extract_html_content(response.text, casino_mode, base_domain=base_domain)
         
     except requests.exceptions.Timeout:
         return False, None, "Request timed out"
