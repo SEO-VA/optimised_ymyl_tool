@@ -25,6 +25,10 @@ def _show_login_form() -> bool:
     """Renders login UI."""
     st.markdown("# 🔐 YMYL Audit Tool")
     st.markdown("### Please log in to continue")
+    st.markdown(
+    'The tool has been updated and can be found at '
+    '[https://ymyl-audit.streamlit.app/](https://ymyl-audit.streamlit.app/)'
+)
     
     # Check if secrets are configured correctly
     if "auth" not in st.secrets or "users" not in st.secrets["auth"]:
