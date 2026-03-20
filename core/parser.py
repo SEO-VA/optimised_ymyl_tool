@@ -9,7 +9,7 @@ import json
 import re
 import inspect
 import streamlit as st
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from core.models import Violation, Severity
 from utils.helpers import safe_log
 
@@ -20,11 +20,16 @@ class ResponseParser:
 
     @staticmethod
     def parse_to_violations(raw_text: str) -> List[Violation]:
+        violations, _ = ResponseParser.parse_text_to_violations(raw_text)
+        return violations
+
+    @staticmethod
+    def parse_text_to_violations(raw_text: str) -> Tuple[List[Violation], bool]:
         cleaned_json = ResponseParser._extract_json_structure(raw_text)
-        
+
         if not cleaned_json:
             safe_log(f"Parser: Could not find JSON. Response start: {raw_text[:200]}...", "ERROR")
-            return []
+            return [], False
 
         try:
             data = json.loads(cleaned_json)
@@ -35,9 +40,17 @@ class ResponseParser:
                 data = json.loads(healed_json)
             except json.JSONDecodeError as e:
                 safe_log(f"Parser: Fatal JSON error: {e}", "ERROR")
-                return []
+                return [], False
 
-        return ResponseParser._map_data_to_violations(data)
+        return ResponseParser.parse_payload_to_violations(data)
+
+    @staticmethod
+    def parse_payload_to_violations(payload: Any) -> Tuple[List[Violation], bool]:
+        data = ResponseParser._normalize_payload(payload)
+        if data is None:
+            safe_log("Parser: No structured payload provided.", "WARNING")
+            return [], False
+        return ResponseParser._map_data_to_violations(data), True
 
     @staticmethod
     def _extract_json_structure(text: str) -> Optional[str]:
@@ -57,6 +70,24 @@ class ResponseParser:
     @staticmethod
     def _heuristic_fix_json(bad_json: str) -> str:
         return bad_json.replace('\t', '    ').replace('\r', '')
+
+    @staticmethod
+    def _normalize_payload(payload: Any) -> Optional[Any]:
+        if payload is None:
+            return None
+        if isinstance(payload, (dict, list)):
+            return payload
+        if isinstance(payload, str):
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                return None
+        if hasattr(payload, "model_dump"):
+            try:
+                return payload.model_dump(mode="json")
+            except Exception:
+                return None
+        return None
 
     @staticmethod
     def _map_data_to_violations(data: Any) -> List[Violation]:

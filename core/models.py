@@ -87,6 +87,36 @@ class AnalysisResult:
     # Debug info
     debug_info: Optional[Dict[str, Any]] = None
 
+
+@dataclass
+class OpenAIResponseResult:
+    """
+    Structured transport result for Responses API calls.
+    """
+
+    success: bool
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    status: Optional[str] = None
+    output_text: Optional[str] = None
+    raw_output_items: List[Dict[str, Any]] = field(default_factory=list)
+    tool_summary: Dict[str, Any] = field(default_factory=dict)
+    request_meta: Dict[str, Any] = field(default_factory=dict)
+    parsed_payload: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+            "status": self.status,
+            "output_text": self.output_text,
+            "raw_output_items": self.raw_output_items,
+            "tool_summary": self.tool_summary,
+            "request_meta": self.request_meta,
+            "parsed_payload": self.parsed_payload,
+        }
+
 @dataclass
 class FileState:
     """

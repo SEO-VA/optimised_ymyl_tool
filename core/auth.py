@@ -17,9 +17,25 @@ def check_authentication() -> bool:
     # If already authenticated, return True
     if st.session_state.authenticated:
         return True
+
+    bypass_username = _get_local_bypass_username()
+    if bypass_username:
+        st.session_state.authenticated = True
+        st.session_state.username = bypass_username
+        safe_log(f"Auth: Local bypass enabled for {bypass_username}")
+        return True
         
     # Otherwise, show the login form
     return _show_login_form()
+
+def _get_local_bypass_username():
+    """
+    Optional local-only bypass controlled through gitignored secrets.toml.
+    """
+    auth_settings = st.secrets.get("auth", {})
+    if not auth_settings.get("bypass_local_auth", False):
+        return None
+    return auth_settings.get("bypass_username", "local-dev")
 
 def _show_login_form() -> bool:
     """Renders login UI."""

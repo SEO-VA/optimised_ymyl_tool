@@ -9,6 +9,7 @@ from utils.feature_registry import FeatureRegistry
 from core.processor import processor
 from utils.helpers import trigger_completion_notification
 import json
+from dataclasses import is_dataclass, asdict
 
 class AdminLayout:
     
@@ -121,10 +122,22 @@ class AdminLayout:
         except: pass
 
     def _sanitize_for_display(self, result_dict):
-        clean = result_dict.copy()
-        if 'word_bytes' in clean and clean['word_bytes']:
-            clean['word_bytes'] = "<Word Document>"
-        return clean
+        return self._to_display_safe(result_dict)
+
+    def _to_display_safe(self, value):
+        if is_dataclass(value):
+            return self._to_display_safe(asdict(value))
+        if isinstance(value, dict):
+            clean = {}
+            for key, item in value.items():
+                if key == 'word_bytes' and item:
+                    clean[key] = "<Word Document>"
+                else:
+                    clean[key] = self._to_display_safe(item)
+            return clean
+        if isinstance(value, list):
+            return [self._to_display_safe(item) for item in value]
+        return value
 
     def _run_single(self, content, source, debug, count, casino_mode):
         with st.status(f"Analyzing... ({count} audits)") as status:
@@ -141,7 +154,13 @@ class AdminLayout:
                 if debug and result.get('debug_info'):
                     st.divider()
                     st.subheader("🔍 AI Raw Output Inspector")
-                    st.json(self._sanitize_for_display(result).get('violations', []))
+                    st.json(self._sanitize_for_display({
+                        "debug_info": result.get("debug_info"),
+                        "violations": result.get("violations", []),
+                        "processing_time": result.get("processing_time"),
+                        "total_violations_found": result.get("total_violations_found"),
+                        "unique_violations": result.get("unique_violations"),
+                    }))
             else:
                 st.error(result.get('error'))
 
