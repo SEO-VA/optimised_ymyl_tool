@@ -25,13 +25,26 @@ class URLAnalysisFeature(BaseAnalysisFeature):
         
         url = url.strip()
         is_valid = bool(url and validate_url(url))
-        error_message = "Invalid URL format" if (url and not is_valid) else ""
+        if not url:
+            error_message = "Please enter a URL before extracting content."
+        elif not is_valid:
+            error_message = "Please enter a valid URL starting with http:// or https://."
+        else:
+            error_message = ""
         
         return {
             'url': url,
             'is_valid': is_valid,
             'error_message': error_message
         }
+
+    def validate_input(self, input_data: Dict[str, Any]) -> Tuple[bool, str]:
+        url = (input_data or {}).get('url', '').strip()
+        if not url:
+            return False, "Please enter a URL before extracting content."
+        if not validate_url(url):
+            return False, "Please enter a valid URL starting with http:// or https://."
+        return True, ""
     
     def extract_content(self, input_data: Dict[str, Any]) -> Tuple[bool, Optional[str], Optional[str]]:
         url = input_data.get('url', '')

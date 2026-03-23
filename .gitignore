@@ -9,6 +9,7 @@ __pycache__/
 *.pyd
 *.so
 
+tests/*.py
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -35,3 +36,10 @@ pip-wheel-metadata/
 .streamlit/secrets.toml
 
 sqeg_2025_ymyl_knowledge.md
+
+.dual-graph/
+
+.claudeignore
+.codexignore
+CLAUDE.md
+AGENTS.md

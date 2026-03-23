@@ -4,6 +4,7 @@ from utils.feature_registry import FeatureRegistry
 from core.processor import processor
 from core.state import state_manager
 from ui.content_preview import render_content_preview
+from ui.content_selection import filter_content_json
 
 
 class UserLayout:
@@ -16,6 +17,7 @@ class UserLayout:
 
         analysis_key = f"user_analysis_{selected_feature}"
         extract_key = f"user_extracted_{selected_feature}"
+        selection_key = f"user_section_selection_{selected_feature}"
         is_processing = state_manager.is_processing
 
         col_input, col_opts = st.columns([3, 1])
@@ -40,7 +42,7 @@ class UserLayout:
         has_result = bool(st.session_state.get(f'{analysis_key}_complete'))
 
         if has_result:
-            self._show_single_file_results(analysis_key, extract_key)
+            self._show_single_file_results(analysis_key, extract_key, selection_key)
             return
 
         c1, c2, c3 = st.columns([1, 2, 1])
@@ -48,9 +50,13 @@ class UserLayout:
             if not has_extraction:
                 btn_text = "🔍 Extract Content" if not is_multi else "🔍 Extract All Files"
                 if st.button(btn_text, type="primary", use_container_width=True,
-                             disabled=not input_data.get('is_valid', False) or is_processing):
-                    state_manager.is_processing = True
-                    st.rerun()
+                             disabled=is_processing):
+                    is_valid, validation_message = feature_handler.validate_input(input_data)
+                    if not is_valid:
+                        st.warning(f"⚠️ {validation_message}")
+                    else:
+                        state_manager.is_processing = True
+                        st.rerun()
             else:
                 col_analyze, col_reset = st.columns([3, 1])
                 with col_analyze:
@@ -61,7 +67,7 @@ class UserLayout:
                         st.rerun()
                 with col_reset:
                     if st.button("↩️ Re-extract", use_container_width=True):
-                        for k in [extract_key, f"user_source_{selected_feature}"]:
+                        for k in [extract_key, f"user_source_{selected_feature}", selection_key]:
                             st.session_state.pop(k, None)
                         st.rerun()
 
@@ -73,18 +79,37 @@ class UserLayout:
         # Step 2: Run analysis
         if state_manager.is_processing and st.session_state.get(f'{analysis_key}_run'):
             content = st.session_state.get(extract_key)
+            filtered = self._filter_selected_sections(content, selection_key)
+            if filtered is None:
+                st.warning("⚠️ No sections selected. Please select at least one section to analyze.")
+                state_manager.is_processing = False
+                st.session_state.pop(f'{analysis_key}_run', None)
+                st.rerun()
+                return
             source = st.session_state.get(f"user_source_{selected_feature}", "content")
-            self._run_analysis(content, source, analysis_key, selected_feature, topic_description)
+            self._run_analysis(filtered, source, analysis_key, selected_feature, topic_description)
             return
 
         # Show content preview after extraction
         if has_extraction:
             with st.expander("📋 Content Preview — verify before analysis", expanded=True):
-                render_content_preview(st.session_state[extract_key])
+                render_content_preview(st.session_state[extract_key], selection_key=selection_key)
+
+    def _filter_selected_sections(self, content_json: str, selection_key: str):
+        """Remove deselected big_chunks from JSON. Returns filtered JSON string,
+        or None if no sections are selected.
+        selection_key holds a list of selected section labels."""
+        return filter_content_json(content_json, st.session_state.get(selection_key))
 
     def _do_extract(self, feature_handler, input_data, feature_key):
         extract_key = f"user_extracted_{feature_key}"
         try:
+            is_valid, validation_message = feature_handler.validate_input(input_data)
+            if not is_valid:
+                st.warning(f"⚠️ {validation_message}")
+                state_manager.is_processing = False
+                return
+
             with st.status("🔍 Extracting content...", expanded=True) as status:
                 st.write("📄 Parsing page structure...")
                 success, content, err = feature_handler.extract_content(input_data)
@@ -129,7 +154,7 @@ class UserLayout:
     def _run_multi_file(self, feature_handler, input_data, topic_description):
         pass
 
-    def _show_single_file_results(self, key, extract_key):
+    def _show_single_file_results(self, key, extract_key, selection_key=None):
         st.success("✅ Analysis Ready")
         if st.session_state.get(f'{key}_word_bytes'):
             st.download_button("📄 Download Word Report", st.session_state[f'{key}_word_bytes'], "report.docx")
@@ -147,7 +172,9 @@ class UserLayout:
             prefix = key.replace('user_analysis_', 'user_')
             keys_to_del = [k for k in st.session_state.keys()
                            if k.startswith(key) or k == extract_key or k.startswith(prefix)]
-            for k in keys_to_del:
+            if selection_key:
+                keys_to_del.append(selection_key)
+            for k in set(keys_to_del):
                 del st.session_state[k]
             st.rerun()
 

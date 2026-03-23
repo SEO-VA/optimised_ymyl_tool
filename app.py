@@ -5,7 +5,7 @@ Updated: Removed Sidebar controls (moved to Layouts).
 """
 
 import streamlit as st
-from core.auth import check_authentication, logout, get_current_user
+from core.auth import check_authentication, logout, get_current_user, is_current_user_admin
 from core.state import state_manager
 from ui.user_layout import UserLayout
 from ui.admin_layout import AdminLayout
@@ -25,7 +25,7 @@ def main():
         return
     
     current_user = get_current_user()
-    is_admin = (current_user == 'admin')
+    is_admin = is_current_user_admin()
     
     # 2. Global Header & Navigation
     _render_header(current_user)
