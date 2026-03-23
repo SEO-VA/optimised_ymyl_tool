@@ -165,7 +165,7 @@ class UserLayout:
                 st.download_button("📄 Download Word Report", st.session_state[f'{key}_word_bytes'], "report.docx", use_container_width=True)
 
         with col_gdoc:
-            gdoc_configured = bool(st.secrets.get("gdoc_service_account"))
+            gdoc_configured = bool(st.secrets.get("google_docs"))
             if gdoc_configured:
                 gdoc_url = st.session_state.get(f'{key}_gdoc_url')
                 if gdoc_url:
@@ -178,13 +178,17 @@ class UserLayout:
                         feature_key = key.replace('user_analysis_', '')
                         source = st.session_state.get(f'user_source_{feature_key}', 'content')
                         title = f"YMYL Audit - {source}"
-                        with st.spinner("Creating Google Doc..."):
-                            try:
-                                url = processor.generate_google_doc(content_json, violations, user_email, title)
-                                st.session_state[f'{key}_gdoc_url'] = url
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to create Google Doc: {e}")
+
+                        if not st.secrets.get("google_docs"):
+                            st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
+                        else:
+                            with st.spinner("Creating Google Doc..."):
+                                try:
+                                    url = processor.generate_google_doc(content_json, violations, user_email, title)
+                                    st.session_state[f'{key}_gdoc_url'] = url
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Failed to create Google Doc: {str(e)}")
 
         tab_report, tab_preview = st.tabs(["📄 Audit Report", "📋 Extracted Content"])
         with tab_report:

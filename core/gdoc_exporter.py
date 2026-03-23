@@ -3,7 +3,7 @@
 Google Doc Exporter
 Creates a Google Doc from the original content JSON, then adds inline
 comments anchored to each violation's problematic text via the Drive API.
-Requires a GCP service account in st.secrets["gdoc_service_account"].
+Requires a GCP service account in st.secrets["google_docs"]["service_account"].
 """
 
 import json
@@ -45,7 +45,8 @@ class GoogleDocExporter:
         self._drive = None
 
     def _build_clients(self):
-        sa_info = dict(st.secrets["gdoc_service_account"])
+        import json as _json
+        sa_info = _json.loads(_json.dumps(dict(st.secrets["google_docs"]["service_account"])))
         creds = service_account.Credentials.from_service_account_info(
             sa_info, scopes=_SCOPES
         )
@@ -153,28 +154,10 @@ class GoogleDocExporter:
             lines += [f"Fix translation: {v.rewrite_translation}"]
         comment_body = "\n".join(lines)
 
-        # Try anchored comment first; fall back to unanchored if text not found
-        anchor_found = anchor_text and anchor_text in full_text
-        comment_payload = {"content": comment_body}
-
-        if anchor_found:
-            comment_payload["anchor"] = json.dumps({
-                "r": "head",
-                "a": [{
-                    "txt": {
-                        "lns": [{"c": anchor_text}]
-                    }
-                }]
-            })
-        else:
-            # Unanchored — quote the problematic text in the comment body
-            comment_payload["content"] = (
-                f'Problematic text: "{anchor_text}"\n\n' + comment_body
-            )
-            safe_log(
-                f"GDocExporter: Could not anchor comment for '{anchor_text[:60]}...' — adding as general comment",
-                "WARNING",
-            )
+        # Build comment payload (all comments are unanchored for now — simpler approach)
+        comment_payload = {
+            "content": f'**Problematic text:** "{anchor_text}"\n\n{comment_body}'
+        }
 
         try:
             self._drive.comments().create(
@@ -182,8 +165,11 @@ class GoogleDocExporter:
                 fields="id",
                 body=comment_payload,
             ).execute()
+            safe_log(f"GDocExporter: Added comment for '{anchor_text[:50]}...'")
         except HttpError as e:
             safe_log(f"GDocExporter: Comment creation failed: {e}", "WARNING")
+        except Exception as e:
+            safe_log(f"GDocExporter: Unexpected error adding comment: {e}", "WARNING")
 
     def _share_doc(self, doc_id: str):
         if not self.user_email or self.user_email == "Anonymous":

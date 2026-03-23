@@ -5,13 +5,23 @@ Analysis Processor Module
 
 import asyncio
 import concurrent.futures
+import os
 from typing import Dict, Any
 from core.orchestrator import analyze_content
 from core.reporter import generate_word_report
 from utils.helpers import safe_log
 
+def _is_mock_enabled() -> bool:
+    """Check if mock mode is enabled via Streamlit secrets."""
+    import streamlit as st
+    return str(st.secrets.get("USE_MOCK_PROCESSOR", "false")).lower() == "true"
+
 class AnalysisProcessor:
-    def process_single_file(self, content: str, source_description: str, topic_description: str = "", debug_mode: bool = False) -> Dict[str, Any]:
+    def process_single_file(self, content: str, source_description: str, topic_description: str = "", debug_mode: bool = False, mock_mode: bool = False) -> Dict[str, Any]:
+        if mock_mode or _is_mock_enabled():
+            from core.mock_processor import mock_processor
+            return mock_processor.process_single_file(content, source_description, topic_description, debug_mode)
+
         # Run async analysis in a thread
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(lambda: asyncio.run(analyze_content(content, topic_description, debug_mode)))

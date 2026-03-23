@@ -93,7 +93,11 @@ class AdminLayout:
         with col_btn:
             if st.button("🗑️ Discard & Restart", type="secondary", use_container_width=True):
                 self._smart_reset()
-        
+
+        if st.session_state.get('admin_analysis_complete'):
+            self._show_admin_results()
+            return
+
         is_multi = 'admin_multi_extracted' in st.session_state
         if is_multi:
             self._render_multi_preview()
@@ -102,7 +106,11 @@ class AdminLayout:
 
         st.divider()
 
-        debug = st.checkbox("Debug Mode", value=True)
+        col_debug, col_mock = st.columns(2)
+        with col_debug:
+            debug = st.checkbox("Debug Mode", value=True)
+        with col_mock:
+            mock_mode = st.checkbox("🧪 Mock Mode (skip API calls)", value=False)
         topic_description = st.session_state.get('global_topic_description', 'Online casino affiliate site')
 
         if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
@@ -116,7 +124,7 @@ class AdminLayout:
                 if filtered is None:
                     st.warning("⚠️ No sections selected. Please select at least one section to analyze.")
                     return
-                self._run_single(filtered, st.session_state['source_info'], debug, topic_description)
+                self._run_single(filtered, st.session_state['source_info'], debug, topic_description, mock_mode)
 
     def _render_single_preview(self):
         content = st.session_state.get('extracted_content', '')
@@ -154,55 +162,79 @@ class AdminLayout:
             return [self._to_display_safe(item) for item in value]
         return value
 
-    def _run_single(self, content, source, debug, topic_description):
-        with st.status("Analyzing... (3-stage pipeline)") as status:
-            result = processor.process_single_file(content, source, topic_description, debug)
+    def _run_single(self, content, source, debug, topic_description, mock_mode=False):
+        label = "Running mock analysis..." if mock_mode else "Analyzing... (3-stage pipeline)"
+        with st.status(label) as status:
+            result = processor.process_single_file(content, source, topic_description, debug, mock_mode)
 
             if result['success']:
                 status.update(label="Done", state="complete")
                 trigger_completion_notification()
-
-                col_word, col_gdoc = st.columns([1, 1])
-                with col_word:
-                    if result.get('word_bytes'):
-                        st.download_button("📄 Download Report", result['word_bytes'], f"Report_{source}.docx", type="primary", use_container_width=True)
-
-                with col_gdoc:
-                    gdoc_configured = bool(st.secrets.get("gdoc_service_account"))
-                    if gdoc_configured:
-                        if st.button("📝 Create Google Doc with Comments", use_container_width=True):
-                            violations = result.get('violations', [])
-                            user_email = get_current_user()
-                            title = f"YMYL Audit - {source}"
-                            with st.spinner("Creating Google Doc..."):
-                                try:
-                                    url = processor.generate_google_doc(content, violations, user_email, title)
-                                    st.success(f"✅ [Google Doc created]({url})")
-                                except Exception as e:
-                                    st.error(f"Failed to create Google Doc: {e}")
-                
-                if debug and result.get('debug_info'):
-                    st.divider()
-                    st.subheader("🔍 Pipeline Debug Inspector")
-                    debug_info = result.get("debug_info", {})
-
-                    with st.expander(f"Stage 1: Detection ({len(debug_info.get('detection', []))} lenses)", expanded=False):
-                        st.json(self._sanitize_for_display(debug_info.get("detection", [])))
-
-                    with st.expander("Stage 2: Verification", expanded=False):
-                        st.json(self._sanitize_for_display(debug_info.get("verification", {})))
-
-                    with st.expander("Stage 3: Finalization", expanded=False):
-                        st.json(self._sanitize_for_display(debug_info.get("finalization", {})))
-
-                    with st.expander("Summary", expanded=True):
-                        st.json(self._sanitize_for_display({
-                            "processing_time": result.get("processing_time"),
-                            "total_candidates": result.get("total_violations_found"),
-                            "unique_violations": result.get("unique_violations"),
-                        }))
+                st.session_state['admin_analysis_complete'] = True
+                st.session_state['admin_analysis_word_bytes'] = result.get('word_bytes')
+                st.session_state['admin_analysis_violations'] = result.get('violations', [])
+                st.session_state['admin_analysis_source'] = source
+                st.session_state['admin_analysis_content'] = content
+                st.session_state['admin_analysis_debug_mode'] = debug
+                st.session_state['admin_analysis_debug_info'] = result.get('debug_info')
+                st.session_state['admin_analysis_processing_time'] = result.get('processing_time')
+                st.session_state['admin_analysis_total_violations'] = result.get('total_violations_found')
+                st.session_state['admin_analysis_unique_violations'] = result.get('unique_violations')
+                st.rerun()
             else:
                 st.error(result.get('error'))
+
+    def _show_admin_results(self):
+        source = st.session_state.get('admin_analysis_source', 'content')
+
+        col_word, col_gdoc = st.columns([1, 1])
+        with col_word:
+            word_bytes = st.session_state.get('admin_analysis_word_bytes')
+            if word_bytes:
+                st.download_button("📄 Download Report", word_bytes, f"Report_{source}.docx", type="primary", use_container_width=True)
+
+        with col_gdoc:
+            gdoc_url = st.session_state.get('admin_analysis_gdoc_url')
+            if gdoc_url:
+                st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
+            else:
+                if st.button("📝 Create Google Doc with Comments", use_container_width=True):
+                    if not st.secrets.get("google_docs"):
+                        st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
+                    else:
+                        violations = st.session_state.get('admin_analysis_violations', [])
+                        content = st.session_state.get('admin_analysis_content', '{}')
+                        user_email = get_current_user()
+                        title = f"YMYL Audit - {source}"
+                        with st.spinner("Creating Google Doc..."):
+                            try:
+                                url = processor.generate_google_doc(content, violations, user_email, title)
+                                st.session_state['admin_analysis_gdoc_url'] = url
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Failed to create Google Doc: {str(e)}")
+
+        debug = st.session_state.get('admin_analysis_debug_mode', False)
+        debug_info = st.session_state.get('admin_analysis_debug_info')
+        if debug and debug_info:
+            st.divider()
+            st.subheader("🔍 Pipeline Debug Inspector")
+
+            with st.expander(f"Stage 1: Detection ({len(debug_info.get('detection', []))} lenses)", expanded=False):
+                st.json(self._sanitize_for_display(debug_info.get("detection", [])))
+
+            with st.expander("Stage 2: Verification", expanded=False):
+                st.json(self._sanitize_for_display(debug_info.get("verification", {})))
+
+            with st.expander("Stage 3: Finalization", expanded=False):
+                st.json(self._sanitize_for_display(debug_info.get("finalization", {})))
+
+            with st.expander("Summary", expanded=True):
+                st.json(self._sanitize_for_display({
+                    "processing_time": st.session_state.get('admin_analysis_processing_time'),
+                    "total_candidates": st.session_state.get('admin_analysis_total_violations'),
+                    "unique_violations": st.session_state.get('admin_analysis_unique_violations'),
+                }))
 
     def _run_multi(self, content_json, debug, topic_description):
         files = json.loads(content_json).get('files', {})

@@ -11,6 +11,10 @@ from docx.shared import RGBColor, Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from utils.helpers import safe_log
 
+def _sanitize(text: str) -> str:
+    """Strip NULL bytes and control characters that are invalid in XML."""
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
 def generate_word_report(markdown_content: str, title: str, topic_description: str = "YMYL Audit") -> bytes:
     """Converts markdown string to docx bytes."""
     try:
@@ -26,13 +30,13 @@ def generate_word_report(markdown_content: str, title: str, topic_description: s
         style.font.size = Pt(11)
         
         # Header
-        doc.add_heading(title, 0)
-        
+        doc.add_heading(_sanitize(title), 0)
+
         # Parse content line by line
         for line in markdown_content.split('\n'):
-            line = line.strip()
+            line = _sanitize(line.strip())
             if not line: continue
-            
+
             if line.startswith('### '):
                 doc.add_heading(line[4:], 2)
             elif line.startswith('## '):
