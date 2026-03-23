@@ -6,6 +6,7 @@ Fetches Google Docs as HTML via the Drive API using a service account.
 
 import json
 import re
+from collections.abc import Mapping
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -160,7 +161,7 @@ def _get_service_account_info(settings: Optional[Dict[str, Any]] = None) -> Opti
             raise ValueError("`google_docs.service_account_info_json` is not valid JSON.")
 
     nested_info = settings.get("service_account_info") or settings.get("service_account")
-    if isinstance(nested_info, dict):
+    if isinstance(nested_info, Mapping):
         return _normalize_service_account_info(dict(nested_info))
 
     candidate_keys = (
