@@ -14,6 +14,12 @@ import json
 import os
 from typing import Dict, Any, Tuple, Optional, List
 from features.base_feature import BaseAnalysisFeature
+from core.google_docs_importer import (
+    fetch_google_doc_html,
+    get_google_docs_reader_email,
+    is_google_doc_url,
+    validate_google_docs_runtime_configuration,
+)
 from core.html_extractor import extract_html_content
 from utils.helpers import safe_log, create_safe_filename
 
@@ -26,7 +32,7 @@ class HTMLAnalysisFeature(BaseAnalysisFeature):
         # 1. Input Method Toggle
         input_method = st.radio(
             "**Input method:**",
-            ["📁 Upload HTML/ZIP", "📝 Paste HTML"],
+            ["📁 Upload HTML/ZIP", "📝 Paste HTML", "🔗 Google Doc link"],
             horizontal=True,
             key=self.get_session_key("input_method"),
             disabled=disabled
@@ -53,7 +59,38 @@ class HTMLAnalysisFeature(BaseAnalysisFeature):
             elif html_content:
                 error_message = "Content too short."
 
-        # 3. Upload Interface (ZIP / HTML)
+        # 3. Google Doc Link Interface
+        elif input_method == "🔗 Google Doc link":
+            config_error = validate_google_docs_runtime_configuration()
+            reader_email = get_google_docs_reader_email()
+
+            instruction = "Share the doc with the configured app account as Viewer, then paste the link."
+            if reader_email:
+                instruction = f"Share the doc with `{reader_email}` as Viewer, then paste the link."
+            st.caption(instruction)
+
+            google_doc_url = st.text_input(
+                "**Google Doc URL:**",
+                placeholder="https://docs.google.com/document/d/FILE_ID/edit",
+                key=self.get_session_key("google_doc_url"),
+                disabled=disabled,
+                help="Paste a native Google Doc link. Sheets and Slides are not supported."
+            ).strip()
+
+            if not google_doc_url:
+                error_message = "Please enter a Google Doc URL before extracting content."
+            if config_error and google_doc_url:
+                error_message = config_error
+            elif google_doc_url and is_google_doc_url(google_doc_url):
+                is_valid = config_error is None
+                input_data["source_type"] = "google_doc_url"
+                input_data["google_doc_url"] = google_doc_url
+                if config_error:
+                    error_message = config_error
+            elif google_doc_url:
+                error_message = "Please enter a valid Google Doc URL."
+
+        # 4. Upload Interface (ZIP / HTML)
         else:
             uploaded_file = st.file_uploader(
                 "**Upload HTML or ZIP:**",
@@ -116,7 +153,20 @@ class HTMLAnalysisFeature(BaseAnalysisFeature):
         # A. Handle ZIP (Google Docs or Bulk)
         if source_type == 'zip':
             return self._extract_zip_content(input_data['zip_bytes'], casino_mode)
-        
+
+        if source_type == 'google_doc_url':
+            success, html_content, title, doc_id, error_message = fetch_google_doc_html(input_data.get('google_doc_url', ''))
+            if not success:
+                return False, None, error_message
+
+            if title:
+                input_data['google_doc_title'] = title
+            if doc_id:
+                input_data['google_doc_id'] = doc_id
+
+            safe_log(f"HTML Feature: Extracting Google Doc {doc_id or 'unknown'} (Casino Mode: {casino_mode})")
+            return extract_html_content(html_content or "", casino_mode)
+
         # B. Handle Single Text (Paste or File)
         html_content = input_data.get('html_content', '')
         safe_log(f"HTML Feature: Extracting single file (Casino Mode: {casino_mode})")
@@ -189,4 +239,11 @@ class HTMLAnalysisFeature(BaseAnalysisFeature):
         return []
 
     def get_source_description(self, input_data: Dict[str, Any]) -> str:
+        if input_data.get('source_type') == 'google_doc_url':
+            title = input_data.get('google_doc_title')
+            if title:
+                return f"GoogleDoc_{create_safe_filename(title)}"
+            doc_id = input_data.get('google_doc_id')
+            if doc_id:
+                return f"GoogleDoc_{doc_id}"
         return input_data.get('filename', 'HTML_Content')
