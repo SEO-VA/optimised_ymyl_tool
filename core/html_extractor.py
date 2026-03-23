@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-HTML Content Extractor - Surgical Edition V15.0
-Changes from V14.2:
-1. _render_inline_text() helper preserves links [text](url), bold **text**, italic *text*
-2. TABLE_HEADER / TABLE_ROW separate small_chunks (no more flat // rows)
-3. Page metadata extracted before preprocessing (published date, author, schema.org)
-4. OL: / UL: with | separator instead of LIST: with //
-5. FAQ emits separate FAQ_Q: and FAQ_A: small_chunks
-6. blockquote and disclaimer/notice callout support
-7. base_domain filtering to skip internal nav links
+HTML Content Extractor - V16.0
+Changes from V15.0:
+1. Output format changed from big_chunks/small_chunks (tagged strings) to sections (markdown)
+2. Each section has: index, name, content (plain markdown string)
+3. Eliminates custom tags (CONTENT:, UL:, TABLE_HEADER:, etc.) — AI receives clean markdown
+4. content_preview.py simplification: single c.markdown(content) per section
 """
 
 import json
@@ -32,8 +29,8 @@ class HTMLContentExtractor:
 
     def __init__(self):
         self.processed_elements: Set[str] = set()
-        self.big_chunks = []
-        self.chunk_index = 1
+        self.sections = []
+        self.section_index = 1
         self._base_domain: Optional[str] = None
 
     def extract_content(self, html_content: str, casino_mode: bool = False, base_domain: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -49,10 +46,10 @@ class HTMLContentExtractor:
             self._preprocess_soup(soup)
 
             self.processed_elements.clear()
-            # chunk_index continues after metadata chunk(s)
+            # section_index continues after metadata section(s)
 
             if casino_mode:
-                safe_log("Extractor: Running Surgical Casino Extraction V15.0")
+                safe_log("Extractor: Running Surgical Casino Extraction V16.0")
 
                 # 1. Granular Metadata
                 self._extract_metadata_separated(soup)
@@ -82,9 +79,9 @@ class HTMLContentExtractor:
 
                 # 5. Append FAQ
                 for faq_chunk in faq_chunks:
-                    faq_chunk["big_chunk_index"] = self.chunk_index
-                    self.big_chunks.append(faq_chunk)
-                    self.chunk_index += 1
+                    faq_chunk["index"] = self.section_index
+                    self.sections.append(faq_chunk)
+                    self.section_index += 1
 
             else:
                 safe_log("Extractor: Running Generic Extraction")
@@ -171,35 +168,35 @@ class HTMLContentExtractor:
     # ------------------------------------------------------------------
 
     def _extract_head_metadata(self, soup: BeautifulSoup):
-        meta_items = []
+        meta_lines = []
 
         head = soup.find('head')
         if head:
             # Meta description
             desc_tag = head.find('meta', attrs={'name': re.compile(r'^description$', re.I)})
             if desc_tag and desc_tag.get('content'):
-                meta_items.append(f"META_DESC: {clean_text(desc_tag['content'])}")
+                meta_lines.append(clean_text(desc_tag['content']))
 
             # Published / modified dates
             for prop in ('article:published_time', 'article:modified_time', 'og:updated_time'):
                 tag = head.find('meta', attrs={'property': prop}) or head.find('meta', attrs={'name': prop})
                 if tag and tag.get('content'):
-                    label = 'PUBLISHED' if 'published' in prop else 'UPDATED'
+                    label = 'Published' if 'published' in prop else 'Updated'
                     date_val = tag['content'][:10]  # YYYY-MM-DD
-                    meta_items.append(f"{label}: {date_val}")
+                    meta_lines.append(f"**{label}:** {date_val}")
 
             # Author
             author_tag = head.find('meta', attrs={'name': re.compile(r'^author$', re.I)})
             if author_tag and author_tag.get('content'):
-                meta_items.append(f"AUTHOR: {clean_text(author_tag['content'])}")
+                meta_lines.append(f"**Author:** {clean_text(author_tag['content'])}")
 
         # <time> elements in body (fallback for published date)
-        if not any(m.startswith('PUBLISHED') for m in meta_items):
+        if not any('Published' in m for m in meta_lines):
             time_tag = soup.find('time', attrs={'datetime': True})
             if time_tag:
                 dt = time_tag.get('datetime', '')[:10]
                 if dt:
-                    meta_items.append(f"PUBLISHED: {dt}")
+                    meta_lines.append(f"**Published:** {dt}")
 
         # Schema.org JSON-LD — look for rating/review data
         for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
@@ -216,19 +213,19 @@ class HTMLContentExtractor:
                             rc = rating.get('ratingCount', '')
                             best = rating.get('bestRating', '5')
                             if rv:
-                                meta_items.append(f"SCHEMA_RATING: {rv}/{best} ({rc} ratings)" if rc else f"SCHEMA_RATING: {rv}/{best}")
+                                meta_lines.append(f"**Rating:** {rv}/{best}" + (f" ({rc} ratings)" if rc else ""))
                         elif rating:
-                            meta_items.append(f"SCHEMA_RATING: {rating}")
+                            meta_lines.append(f"**Rating:** {rating}")
             except Exception:
                 pass
 
-        if meta_items:
-            self.big_chunks.append({
-                "big_chunk_index": self.chunk_index,
-                "content_name": "Page Metadata",
-                "small_chunks": meta_items
+        if meta_lines:
+            self.sections.append({
+                "index": self.section_index,
+                "name": "Page Metadata",
+                "content": "\n\n".join(meta_lines)
             })
-            self.chunk_index += 1
+            self.section_index += 1
 
     # ------------------------------------------------------------------
     # Preprocessing
@@ -272,12 +269,12 @@ class HTMLContentExtractor:
         if h1:
             text = self._render_inline_text(h1)
             if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Metadata: Main Heading",
-                    "small_chunks": [f"H1: {text}"]
+                self.sections.append({
+                    "index": self.section_index,
+                    "name": "Metadata: Main Heading",
+                    "content": f"# {text}"
                 })
-                self.chunk_index += 1
+                self.section_index += 1
             h1.decompose()
 
         # --- B. Subtitle ---
@@ -285,12 +282,12 @@ class HTMLContentExtractor:
         if subtitle:
             text = self._render_inline_text(subtitle)
             if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Metadata: Subtitle",
-                    "small_chunks": [f"SUBTITLE: {text}"]
+                self.sections.append({
+                    "index": self.section_index,
+                    "name": "Metadata: Subtitle",
+                    "content": f"*{text}*"
                 })
-                self.chunk_index += 1
+                self.section_index += 1
             subtitle.decompose()
 
         # --- C. Lead Text ---
@@ -298,12 +295,12 @@ class HTMLContentExtractor:
         if lead:
             text = self._render_inline_text(lead)
             if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Metadata: Lead Text",
-                    "small_chunks": [f"LEAD: {text}"]
+                self.sections.append({
+                    "index": self.section_index,
+                    "name": "Metadata: Lead Text",
+                    "content": text
                 })
-                self.chunk_index += 1
+                self.section_index += 1
             lead.decompose()
 
         # --- D. Summary Block ---
@@ -311,12 +308,12 @@ class HTMLContentExtractor:
         if summary_block:
             text = self._render_inline_text(summary_block)
             if text:
-                self.big_chunks.append({
-                    "big_chunk_index": self.chunk_index,
-                    "content_name": "Metadata: Summary",
-                    "small_chunks": [f"SUMMARY: {text}"]
+                self.sections.append({
+                    "index": self.section_index,
+                    "name": "Metadata: Summary",
+                    "content": f"> {text}"
                 })
-                self.chunk_index += 1
+                self.section_index += 1
             summary_block.decompose()
 
     # ------------------------------------------------------------------
@@ -324,8 +321,8 @@ class HTMLContentExtractor:
     # ------------------------------------------------------------------
 
     def _extract_faq_chunks(self, soup: BeautifulSoup) -> List[Dict]:
-        """Returns a list of FAQ chunk dicts (each with separate Q/A small_chunks)."""
-        faq_items = []
+        """Returns a list of FAQ section dicts with markdown content."""
+        faq_lines = []
         faq_section = None
         faq_section = soup.find(attrs={'data-qa': 'templateFAQ'}) or soup.find(class_='faq-section')
         if not faq_section:
@@ -354,6 +351,7 @@ class HTMLContentExtractor:
             if not q_text or len(q_text) < 5: continue
 
             a_text = ""
+            curr = None
             a_container = q.find(attrs={'itemprop': 'acceptedAnswer'})
 
             if a_container:
@@ -366,14 +364,13 @@ class HTMLContentExtractor:
                     a_text = self._render_inline_text(curr)
 
             if q_text and a_text:
-                faq_items.append(f"FAQ_Q: {q_text}")
-                faq_items.append(f"FAQ_A: {a_text}")
+                faq_lines.append(f"**Q: {q_text}**\n\n> {a_text}")
                 self._mark_processed(q)
-                if 'curr' in locals() and curr: self._mark_processed(curr)
+                if curr: self._mark_processed(curr)
 
         if faq_section.parent: faq_section.decompose()
-        if faq_items:
-            return [{"content_name": "Frequently Asked Questions", "small_chunks": faq_items}]
+        if faq_lines:
+            return [{"name": "Frequently Asked Questions", "content": "\n\n".join(faq_lines)}]
         return []
 
     # ------------------------------------------------------------------
@@ -381,8 +378,8 @@ class HTMLContentExtractor:
     # ------------------------------------------------------------------
 
     def _extract_with_direct_chunking(self, container):
-        current_chunk_content = []
-        pre_h2_content = []
+        current_lines = []
+        pre_h2_lines = []
         current_section_name = "Main Content"
         tags = ['h2', 'h3', 'h4', 'p', 'table', 'ul', 'ol', 'dl', 'blockquote']
 
@@ -394,23 +391,24 @@ class HTMLContentExtractor:
             if not text and tag not in ('table',): continue
 
             if tag == 'h2':
-                if current_chunk_content:
-                    self.big_chunks.append({
-                        "big_chunk_index": self.chunk_index,
-                        "content_name": current_section_name,
-                        "small_chunks": current_chunk_content.copy()
+                if current_lines:
+                    self.sections.append({
+                        "index": self.section_index,
+                        "name": current_section_name,
+                        "content": "\n\n".join(current_lines)
                     })
-                    self.chunk_index += 1
-                elif pre_h2_content:
-                    self.big_chunks.append({
-                        "big_chunk_index": self.chunk_index,
-                        "content_name": "Introduction",
-                        "small_chunks": pre_h2_content.copy()
+                    self.section_index += 1
+                elif pre_h2_lines:
+                    self.sections.append({
+                        "index": self.section_index,
+                        "name": "Introduction",
+                        "content": "\n\n".join(pre_h2_lines)
                     })
-                    self.chunk_index += 1
+                    self.section_index += 1
+                    pre_h2_lines = []
 
-                current_chunk_content = [f"H2: {text}"]
-                current_section_name = clean_text(element.get_text())  # plain name for section label
+                current_lines = [f"## {text}"]
+                current_section_name = clean_text(element.get_text())
                 self._mark_processed(element)
                 continue
 
@@ -422,15 +420,17 @@ class HTMLContentExtractor:
             is_notice = bool(_SKIP_CLASS_PATTERNS.search(el_classes))
 
             if is_warning:
-                formatted = f"WARNING: {text}"
+                formatted = f"> **Warning:** {text}"
             elif is_notice:
-                formatted = f"NOTICE: {text}"
-            elif tag in ('h3', 'h4'):
-                formatted = f"{tag.upper()}: {text}"
+                formatted = f"> **Note:** {text}"
+            elif tag == 'h3':
+                formatted = f"### {text}"
+            elif tag == 'h4':
+                formatted = f"#### {text}"
             elif tag == 'p':
-                formatted = f"CONTENT: {text}"
+                formatted = text
             elif tag == 'blockquote':
-                formatted = f"BLOCKQUOTE: {text}"
+                formatted = f"> {text}"
             elif tag in ('ul', 'ol'):
                 formatted = self._format_list(element, tag)
             elif tag == 'dl':
@@ -438,41 +438,39 @@ class HTMLContentExtractor:
                 dts = element.find_all('dt')
                 dds = element.find_all('dd')
                 for dt, dd in zip(dts, dds):
-                    items.append(f"{self._render_inline_text(dt)}: {self._render_inline_text(dd)}")
-                if items: formatted = f"DEF_LIST: {' | '.join(items)}"
+                    items.append(f"**{self._render_inline_text(dt)}**: {self._render_inline_text(dd)}")
+                if items: formatted = "\n\n".join(items)
             elif tag == 'table':
-                formatted = self._format_table(element, current_section_name, current_chunk_content, pre_h2_content)
-                # _format_table appends directly and returns None
+                formatted = self._format_table(element)
 
             if formatted:
                 self._mark_processed(element)
                 if current_section_name == "Main Content":
-                    pre_h2_content.append(formatted)
+                    pre_h2_lines.append(formatted)
                 else:
-                    current_chunk_content.append(formatted)
+                    current_lines.append(formatted)
 
-        if current_chunk_content:
-            self.big_chunks.append({
-                "big_chunk_index": self.chunk_index,
-                "content_name": current_section_name,
-                "small_chunks": current_chunk_content
+        if current_lines:
+            self.sections.append({
+                "index": self.section_index,
+                "name": current_section_name,
+                "content": "\n\n".join(current_lines)
             })
-            self.chunk_index += 1
-        elif pre_h2_content:
-            self.big_chunks.append({
-                "big_chunk_index": self.chunk_index,
-                "content_name": "Introduction",
-                "small_chunks": pre_h2_content
+            self.section_index += 1
+        elif pre_h2_lines:
+            self.sections.append({
+                "index": self.section_index,
+                "name": "Introduction",
+                "content": "\n\n".join(pre_h2_lines)
             })
-            self.chunk_index += 1
+            self.section_index += 1
 
     def _format_list(self, element, tag: str) -> Optional[str]:
-        """Format ul/ol as OL:/UL: with | separator, one level of nesting."""
+        """Format ul/ol as markdown list with one level of nesting."""
         items = []
         for i, li in enumerate(element.find_all('li', recursive=False)):
             # Grab direct text of this li (excluding nested list text)
             nested_lists = li.find_all(['ul', 'ol'], recursive=False)
-            # Temporarily detach nested lists to get just this item's text
             detached = []
             for nl in nested_lists:
                 nl.extract()
@@ -482,7 +480,7 @@ class HTMLContentExtractor:
             if tag == 'ol':
                 items.append(f"{i+1}. {li_text}")
             else:
-                items.append(li_text)
+                items.append(f"- {li_text}")
 
             # Re-attach and process nested items
             for nl in detached:
@@ -490,18 +488,12 @@ class HTMLContentExtractor:
                 for nested_li in nl.find_all('li', recursive=False):
                     nested_text = self._render_inline_text(nested_li).strip()
                     if nested_text:
-                        items.append(f"> {nested_text}")
+                        items.append(f"  - {nested_text}")
 
-        if not items:
-            return None
-        prefix = "OL" if tag == 'ol' else "UL"
-        return f"{prefix}: {' | '.join(items)}"
+        return "\n".join(items) if items else None
 
-    def _format_table(self, element, current_section_name: str, current_chunk_content: list, pre_h2_content: list) -> None:
-        """Format table as TABLE_HEADER + TABLE_ROW small_chunks, appended directly."""
-        table_items = []
-
-        # Find header row (thead > tr > th, or first tr with th cells)
+    def _format_table(self, element) -> Optional[str]:
+        """Format table as a markdown table string."""
         thead = element.find('thead')
         header_row = None
         if thead:
@@ -511,29 +503,23 @@ class HTMLContentExtractor:
             if first_tr and first_tr.find('th'):
                 header_row = first_tr
 
+        lines = []
         if header_row:
             cols = [self._render_inline_text(c).strip() for c in header_row.find_all(['th', 'td'])]
             if cols:
-                table_items.append(f"TABLE_HEADER: {' | '.join(cols)}")
+                lines.append('| ' + ' | '.join(cols) + ' |')
+                lines.append('| ' + ' | '.join(['---'] * len(cols)) + ' |')
 
-        # Data rows
-        all_rows = element.find_all('tr')
-        for tr in all_rows:
+        for tr in element.find_all('tr'):
             if tr == header_row:
                 continue
             cells = [self._render_inline_text(c).strip() for c in tr.find_all(['td', 'th'])]
             cells = [c for c in cells if c]
             if cells:
-                table_items.append(f"TABLE_ROW: {' | '.join(cells)}")
+                lines.append('| ' + ' | '.join(cells) + ' |')
 
-        if table_items:
-            self._mark_processed(element)
-            if current_section_name == "Main Content":
-                current_chunk_content  # not used here
-                pre_h2_content.extend(table_items)
-            else:
-                current_chunk_content.extend(table_items)
-        return None
+        self._mark_processed(element)
+        return '\n'.join(lines) if lines else None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -553,9 +539,9 @@ class HTMLContentExtractor:
             self.processed_elements.add(self._get_element_id(child))
 
     def _create_final_json(self) -> str:
-        if not self.big_chunks:
-            self.big_chunks = [{"big_chunk_index": 1, "content_name": "Empty", "small_chunks": ["No content found"]}]
-        return json.dumps({"big_chunks": self.big_chunks}, indent=2, ensure_ascii=False)
+        if not self.sections:
+            self.sections = [{"index": 1, "name": "Empty", "content": "No content found"}]
+        return json.dumps({"sections": self.sections}, indent=2, ensure_ascii=False)
 
 
 def extract_html_content(html: str, casino_mode: bool = False, base_domain: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:

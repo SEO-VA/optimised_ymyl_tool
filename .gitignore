@@ -33,6 +33,7 @@ pip-wheel-metadata/
 .python-version
 .DS_Store
 .claude/settings.local.json
+.claude/settings.json
 .streamlit/secrets.toml
 
 sqeg_2025_ymyl_knowledge.md

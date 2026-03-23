@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Google Doc Extractor - V2.0
-Changes from V1:
-1. _render_inline_text() preserves links [text](url), bold **text**, italic *text*
-2. TABLE_HEADER / TABLE_ROW separate small_chunks
-3. OL: / UL: with | separator
-4. FAQ emits separate FAQ_Q: and FAQ_A: small_chunks
-5. Google Doc bold detection via font-weight style
+Google Doc Extractor - V3.0
+Changes from V2.0:
+1. Output format changed from big_chunks/small_chunks (tagged strings) to sections (markdown)
+2. Each section has: index, name, content (plain markdown string)
+3. Eliminates custom tags (HEADER:, CONTENT:, UL:, TABLE_HEADER:, etc.)
+4. Inline text renderer unchanged (preserves links, bold, italic)
 """
 
 import re
@@ -19,8 +18,8 @@ from utils.helpers import safe_log, clean_text
 class GoogleDocExtractor:
 
     def __init__(self):
-        self.big_chunks = []
-        self.chunk_index = 1
+        self.sections = []
+        self.section_index = 1
         self.metadata_keys = {
             'h1': ['h1', 'title'],
             'subtitle': ['subtitle', 'sub title', 'sub-title'],
@@ -111,9 +110,9 @@ class GoogleDocExtractor:
 
             # Append FAQ
             if faq_chunk:
-                faq_chunk["big_chunk_index"] = self.chunk_index
-                self.big_chunks.append(faq_chunk)
-                self.chunk_index += 1
+                faq_chunk["index"] = self.section_index
+                self.sections.append(faq_chunk)
+                self.section_index += 1
 
             return True, self._create_final_json(), None
 
@@ -129,7 +128,7 @@ class GoogleDocExtractor:
 
     def _hunt_for_metadata(self, soup: BeautifulSoup):
         all_tags = soup.find_all(['p', 'li', 'td', 'h1', 'h2', 'h3'])
-        metadata_chunk_items = []
+        metadata_lines = []
 
         for tag in all_tags:
             text = clean_text(tag.get_text())
@@ -152,25 +151,25 @@ class GoogleDocExtractor:
                 if matched_key: break
 
             if matched_key and matched_key not in self.found_metadata:
-                label = matched_key.upper().replace('_', ' ')
                 self.found_metadata[matched_key] = clean_value
-                metadata_chunk_items.append(f"{label}: {clean_value}")
+                label = matched_key.upper().replace('_', ' ')
+                metadata_lines.append(f"**{label.title()}:** {clean_value}")
                 tag.decompose()
 
         if 'h1' not in self.found_metadata:
             h1_tag = soup.find('h1')
             if h1_tag:
                 val = self._render_inline_text(h1_tag)
-                metadata_chunk_items.insert(0, f"H1: {val}")
+                metadata_lines.insert(0, f"# {val}")
                 h1_tag.decompose()
 
-        if metadata_chunk_items:
-            self.big_chunks.append({
-                "big_chunk_index": self.chunk_index,
-                "content_name": "Metadata & Summary",
-                "small_chunks": metadata_chunk_items
+        if metadata_lines:
+            self.sections.append({
+                "index": self.section_index,
+                "name": "Metadata & Summary",
+                "content": "\n\n".join(metadata_lines)
             })
-            self.chunk_index += 1
+            self.section_index += 1
 
     def _normalize_structure(self, soup: BeautifulSoup):
         # Bold short paragraphs → h2
@@ -185,12 +184,8 @@ class GoogleDocExtractor:
             if is_bold and not text.endswith(('.', '!', '?')):
                 p.name = 'h2'
 
-        # Tables → replace with a sentinel div containing table data attributes
-        # We handle tables directly in _chunk_linear_content via find_all
-        # so no transformation needed here
-
     def _extract_flexible_faq(self, soup: BeautifulSoup) -> Optional[Dict]:
-        faq_items = []
+        faq_lines = []
         faq_header = None
 
         for header in soup.find_all(['h1', 'h2', 'h3', 'p']):
@@ -229,17 +224,16 @@ class GoogleDocExtractor:
             if line.startswith("Q:"):
                 curr_q = line[3:].strip()
             elif line.startswith("A:") and curr_q:
-                faq_items.append(f"FAQ_Q: {curr_q}")
-                faq_items.append(f"FAQ_A: {line[3:].strip()}")
+                faq_lines.append(f"**Q: {curr_q}**\n\n> {line[3:].strip()}")
                 curr_q = ""
 
         faq_header.decompose()
-        if faq_items:
-            return {"content_name": "Frequently Asked Questions", "small_chunks": faq_items}
+        if faq_lines:
+            return {"name": "Frequently Asked Questions", "content": "\n\n".join(faq_lines)}
         return None
 
     def _chunk_linear_content(self, soup: BeautifulSoup):
-        current_chunk = []
+        current_lines = []
         current_title = "Main Content"
         root = soup.find('body') or soup
 
@@ -249,16 +243,17 @@ class GoogleDocExtractor:
             if elem.find_parent('table') and elem.name != 'table': continue
 
             if elem.name in ['h2', 'h3']:
-                if current_chunk:
-                    self.big_chunks.append({
-                        "big_chunk_index": self.chunk_index,
-                        "content_name": current_title,
-                        "small_chunks": current_chunk
+                if current_lines:
+                    self.sections.append({
+                        "index": self.section_index,
+                        "name": current_title,
+                        "content": "\n\n".join(current_lines)
                     })
-                    self.chunk_index += 1
-                    current_chunk = []
+                    self.section_index += 1
+                    current_lines = []
                 current_title = clean_text(elem.get_text())
-                current_chunk.append(f"HEADER: {self._render_inline_text(elem)}")
+                level = "##" if elem.name == 'h2' else "###"
+                current_lines.append(f"{level} {self._render_inline_text(elem)}")
 
             elif elem.name in ['ul', 'ol']:
                 items = []
@@ -267,13 +262,12 @@ class GoogleDocExtractor:
                     if elem.name == 'ol':
                         items.append(f"{i+1}. {li_text}")
                     else:
-                        items.append(li_text)
+                        items.append(f"- {li_text}")
                 if items:
-                    prefix = "OL" if elem.name == 'ol' else "UL"
-                    current_chunk.append(f"{prefix}: {' | '.join(items)}")
+                    current_lines.append("\n".join(items))
 
             elif elem.name == 'table':
-                # Extract table as TABLE_HEADER + TABLE_ROW items
+                # Extract table as markdown
                 thead = elem.find('thead')
                 header_row = None
                 if thead:
@@ -283,10 +277,12 @@ class GoogleDocExtractor:
                     if first_tr and first_tr.find('th'):
                         header_row = first_tr
 
+                table_lines = []
                 if header_row:
                     cols = [self._render_inline_text(c).strip() for c in header_row.find_all(['th', 'td'])]
                     if cols:
-                        current_chunk.append(f"TABLE_HEADER: {' | '.join(cols)}")
+                        table_lines.append('| ' + ' | '.join(cols) + ' |')
+                        table_lines.append('| ' + ' | '.join(['---'] * len(cols)) + ' |')
 
                 for tr in elem.find_all('tr'):
                     if tr == header_row:
@@ -294,25 +290,30 @@ class GoogleDocExtractor:
                     cells = [self._render_inline_text(c).strip() for c in tr.find_all(['td', 'th'])]
                     cells = [c for c in cells if c]
                     if cells:
-                        current_chunk.append(f"TABLE_ROW: {' | '.join(cells)}")
+                        table_lines.append('| ' + ' | '.join(cells) + ' |')
+
+                if table_lines:
+                    current_lines.append('\n'.join(table_lines))
 
             else:
                 rendered = self._render_inline_text(elem)
                 if not rendered: continue
-                prefix = "WARNING" if ('⚠️' in text or 'WARNING' in text or 'UWAGA' in text) else "CONTENT"
-                current_chunk.append(f"{prefix}: {rendered}")
+                if '⚠️' in text or 'WARNING' in text or 'UWAGA' in text:
+                    current_lines.append(f"> **Warning:** {rendered}")
+                else:
+                    current_lines.append(rendered)
 
-        if current_chunk:
-            self.big_chunks.append({
-                "big_chunk_index": self.chunk_index,
-                "content_name": current_title,
-                "small_chunks": current_chunk
+        if current_lines:
+            self.sections.append({
+                "index": self.section_index,
+                "name": current_title,
+                "content": "\n\n".join(current_lines)
             })
 
     def _create_final_json(self) -> str:
-        if not self.big_chunks:
-            self.big_chunks = [{"big_chunk_index": 1, "content_name": "Empty", "small_chunks": ["No content found"]}]
-        return json.dumps({"big_chunks": self.big_chunks}, indent=2, ensure_ascii=False)
+        if not self.sections:
+            self.sections = [{"index": 1, "name": "Empty", "content": "No content found"}]
+        return json.dumps({"sections": self.sections}, indent=2, ensure_ascii=False)
 
 
 def extract_google_doc_content(html: str) -> Tuple[bool, Optional[str], Optional[str]]:

@@ -3,6 +3,7 @@ import streamlit as st
 from utils.feature_registry import FeatureRegistry
 from core.processor import processor
 from core.state import state_manager
+from core.auth import get_current_user
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
 
@@ -143,6 +144,7 @@ class UserLayout:
                 st.session_state[f'{analysis_key}_complete'] = True
                 st.session_state[f'{analysis_key}_report'] = result['report']
                 st.session_state[f'{analysis_key}_word_bytes'] = result.get('word_bytes')
+                st.session_state[f'{analysis_key}_violations'] = result.get('violations', [])
                 st.session_state.pop(f'{analysis_key}_run', None)
                 state_manager.is_processing = False
                 st.rerun()
@@ -156,8 +158,33 @@ class UserLayout:
 
     def _show_single_file_results(self, key, extract_key, selection_key=None):
         st.success("✅ Analysis Ready")
-        if st.session_state.get(f'{key}_word_bytes'):
-            st.download_button("📄 Download Word Report", st.session_state[f'{key}_word_bytes'], "report.docx")
+
+        col_word, col_gdoc = st.columns([1, 1])
+        with col_word:
+            if st.session_state.get(f'{key}_word_bytes'):
+                st.download_button("📄 Download Word Report", st.session_state[f'{key}_word_bytes'], "report.docx", use_container_width=True)
+
+        with col_gdoc:
+            gdoc_configured = bool(st.secrets.get("gdoc_service_account"))
+            if gdoc_configured:
+                gdoc_url = st.session_state.get(f'{key}_gdoc_url')
+                if gdoc_url:
+                    st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
+                else:
+                    if st.button("📝 Create Google Doc with Comments", use_container_width=True):
+                        violations = st.session_state.get(f'{key}_violations', [])
+                        content_json = st.session_state.get(extract_key, '{}')
+                        user_email = get_current_user()
+                        feature_key = key.replace('user_analysis_', '')
+                        source = st.session_state.get(f'user_source_{feature_key}', 'content')
+                        title = f"YMYL Audit - {source}"
+                        with st.spinner("Creating Google Doc..."):
+                            try:
+                                url = processor.generate_google_doc(content_json, violations, user_email, title)
+                                st.session_state[f'{key}_gdoc_url'] = url
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to create Google Doc: {e}")
 
         tab_report, tab_preview = st.tabs(["📄 Audit Report", "📋 Extracted Content"])
         with tab_report:

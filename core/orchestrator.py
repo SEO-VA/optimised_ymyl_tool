@@ -185,10 +185,12 @@ class AuditOrchestrator:
         h1_text = "Unknown Title"
         try:
             data = json.loads(content_json)
-            for chunk in data.get("big_chunks", [])[:3]:
-                for item in chunk.get("small_chunks", []):
-                    if item.startswith("H1:"):
-                        h1_text = item.replace("H1:", "").strip()
+            for section in data.get("sections", [])[:3]:
+                content = section.get("content", "")
+                for line in content.split("\n"):
+                    line = line.strip()
+                    if line.startswith("# ") and not line.startswith("## "):
+                        h1_text = line[2:].strip()
                         break
                 if h1_text != "Unknown Title":
                     break
