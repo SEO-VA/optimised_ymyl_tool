@@ -10,6 +10,7 @@ from core.processor import processor
 from utils.helpers import trigger_completion_notification
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
+from core.auth import get_current_user
 import json
 from dataclasses import is_dataclass, asdict
 
@@ -156,13 +157,29 @@ class AdminLayout:
     def _run_single(self, content, source, debug, topic_description):
         with st.status("Analyzing... (3-stage pipeline)") as status:
             result = processor.process_single_file(content, source, topic_description, debug)
-            
+
             if result['success']:
                 status.update(label="Done", state="complete")
                 trigger_completion_notification()
-                
-                if result.get('word_bytes'):
-                    st.download_button("📄 Download Report", result['word_bytes'], f"Report_{source}.docx", type="primary", use_container_width=True)
+
+                col_word, col_gdoc = st.columns([1, 1])
+                with col_word:
+                    if result.get('word_bytes'):
+                        st.download_button("📄 Download Report", result['word_bytes'], f"Report_{source}.docx", type="primary", use_container_width=True)
+
+                with col_gdoc:
+                    gdoc_configured = bool(st.secrets.get("gdoc_service_account"))
+                    if gdoc_configured:
+                        if st.button("📝 Create Google Doc with Comments", use_container_width=True):
+                            violations = result.get('violations', [])
+                            user_email = get_current_user()
+                            title = f"YMYL Audit - {source}"
+                            with st.spinner("Creating Google Doc..."):
+                                try:
+                                    url = processor.generate_google_doc(content, violations, user_email, title)
+                                    st.success(f"✅ [Google Doc created]({url})")
+                                except Exception as e:
+                                    st.error(f"Failed to create Google Doc: {e}")
                 
                 if debug and result.get('debug_info'):
                     st.divider()
