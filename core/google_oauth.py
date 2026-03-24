@@ -41,8 +41,7 @@ def _get_flow() -> Flow:
 def get_auth_url() -> str:
     """Generate the Google OAuth2 consent URL and store state."""
     flow = _get_flow()
-    auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
-    st.session_state[_STATE_KEY] = state
+    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
     return auth_url
 
 
@@ -53,7 +52,7 @@ def handle_callback() -> bool:
     Returns True if a callback was handled (caller should st.rerun()).
     """
     params = st.query_params
-    if "code" not in params or _STATE_KEY not in st.session_state:
+    if "code" not in params:
         return False
 
     try:
