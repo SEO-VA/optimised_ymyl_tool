@@ -3,23 +3,17 @@
 Google Doc Exporter
 Creates a Google Doc from the original content JSON, then adds inline
 comments anchored to each violation's problematic text via the Drive API.
-Requires a GCP service account in st.secrets["google_docs"]["service_account"].
+Uses OAuth2 user credentials from core.google_oauth (no service account needed).
 """
 
 import json
 from typing import List, Optional
 import streamlit as st
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from core.models import Violation
 from utils.helpers import safe_log
-
-_SCOPES = [
-    "https://www.googleapis.com/auth/documents",
-    "https://www.googleapis.com/auth/drive",
-]
 
 _SEVERITY_EMOJI = {
     "critical": "🔴",
@@ -45,11 +39,10 @@ class GoogleDocExporter:
         self._drive = None
 
     def _build_clients(self):
-        import json as _json
-        sa_info = _json.loads(_json.dumps(dict(st.secrets["google_docs"]["service_account"])))
-        creds = service_account.Credentials.from_service_account_info(
-            sa_info, scopes=_SCOPES
-        )
+        from core.google_oauth import get_credentials
+        creds = get_credentials()
+        if not creds:
+            raise ValueError("Google Drive not authorized. Please authorize first.")
         self._docs = build("docs", "v1", credentials=creds)
         self._drive = build("drive", "v3", credentials=creds)
 
@@ -93,9 +86,6 @@ class GoogleDocExporter:
             if "no violation" in v.violation_type.lower():
                 continue
             self._add_comment(doc_id, v, full_text)
-
-        # 6. Share with user
-        self._share_doc(doc_id)
 
         url = f"https://docs.google.com/document/d/{doc_id}/edit"
         safe_log(f"GDocExporter: Done — {url}")
@@ -171,19 +161,3 @@ class GoogleDocExporter:
         except Exception as e:
             safe_log(f"GDocExporter: Unexpected error adding comment: {e}", "WARNING")
 
-    def _share_doc(self, doc_id: str):
-        if not self.user_email or self.user_email == "Anonymous":
-            return
-        try:
-            self._drive.permissions().create(
-                fileId=doc_id,
-                body={
-                    "type": "user",
-                    "role": "writer",
-                    "emailAddress": self.user_email,
-                },
-                sendNotificationEmail=True,
-            ).execute()
-            safe_log(f"GDocExporter: Shared with {self.user_email}")
-        except HttpError as e:
-            safe_log(f"GDocExporter: Share failed: {e}", "WARNING")

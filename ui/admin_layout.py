@@ -194,25 +194,27 @@ class AdminLayout:
                 st.download_button("📄 Download Report", word_bytes, f"Report_{source}.docx", type="primary", use_container_width=True)
 
         with col_gdoc:
+            from core.google_oauth import get_credentials, get_auth_url
             gdoc_url = st.session_state.get('admin_analysis_gdoc_url')
             if gdoc_url:
                 st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
+            elif not st.secrets.get("google_docs"):
+                st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
+            elif not get_credentials():
+                st.link_button("🔑 Authorize Google Drive", get_auth_url(), use_container_width=True)
             else:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
-                    if not st.secrets.get("google_docs"):
-                        st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
-                    else:
-                        violations = st.session_state.get('admin_analysis_violations', [])
-                        content = st.session_state.get('admin_analysis_content', '{}')
-                        user_email = get_current_user()
-                        title = f"YMYL Audit - {source}"
-                        with st.spinner("Creating Google Doc..."):
-                            try:
-                                url = processor.generate_google_doc(content, violations, user_email, title)
-                                st.session_state['admin_analysis_gdoc_url'] = url
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ Failed to create Google Doc: {str(e)}")
+                    violations = st.session_state.get('admin_analysis_violations', [])
+                    content = st.session_state.get('admin_analysis_content', '{}')
+                    user_email = get_current_user()
+                    title = f"YMYL Audit - {source}"
+                    with st.spinner("Creating Google Doc..."):
+                        try:
+                            url = processor.generate_google_doc(content, violations, user_email, title)
+                            st.session_state['admin_analysis_gdoc_url'] = url
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Failed to create Google Doc: {str(e)}")
 
         debug = st.session_state.get('admin_analysis_debug_mode', False)
         debug_info = st.session_state.get('admin_analysis_debug_info')

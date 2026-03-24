@@ -9,6 +9,7 @@ from core.auth import check_authentication, logout, get_current_user, is_current
 from core.state import state_manager
 from ui.user_layout import UserLayout
 from ui.admin_layout import AdminLayout
+from core.google_oauth import handle_callback
 
 # Configure Streamlit page
 st.set_page_config(
@@ -19,7 +20,11 @@ st.set_page_config(
 
 def main():
     """Main application entry point"""
-    
+
+    # 0. Handle Google OAuth2 callback (must be before any rendering)
+    if handle_callback():
+        st.rerun()
+
     # 1. Authentication Barrier
     if not check_authentication():
         return
