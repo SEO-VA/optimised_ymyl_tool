@@ -7,6 +7,7 @@ Uses OAuth2 user credentials from core.google_oauth (no service account needed).
 """
 
 import json
+from datetime import datetime
 from typing import List, Optional
 import streamlit as st
 from googleapiclient.discovery import build
@@ -57,13 +58,16 @@ class GoogleDocExporter:
         doc_id = doc["documentId"]
         safe_log(f"GDocExporter: Created document {doc_id}")
 
-        if self.report_markdown:
+        if self.violations:
+            full_text, heading_ranges, bold_ranges = self._generate_report_body()
+        elif self.report_markdown:
             full_text, heading_ranges, bold_ranges = self._build_report_text()
         else:
             sections = self._parse_sections()
             full_text, raw_ranges = self._build_doc_text(sections)
             heading_ranges = [(start, end, "HEADING_2") for start, end in raw_ranges]
             bold_ranges = []
+        safe_log(f"GDocExporter: path={'violations' if self.violations else 'report_md' if self.report_markdown else 'content'}, text_len={len(full_text)}, violations={len(self.violations)}")
 
         if full_text:
             self._docs.documents().batchUpdate(
@@ -135,6 +139,64 @@ class GoogleDocExporter:
                 pos += len(content) + 2
 
         return "".join(parts), heading_ranges
+
+    def _generate_report_body(self):
+        parts = []
+        heading_ranges = []
+        bold_ranges = []
+        pos = 0
+
+        def append(text):
+            nonlocal pos
+            parts.append(text)
+            pos += len(text)
+
+        def append_heading(text, style):
+            start = pos
+            append(text + "\n")
+            heading_ranges.append((start, pos - 1, style))
+
+        def append_label_value(label, value):
+            start = pos
+            append(label)
+            bold_ranges.append((start, start + len(label)))
+            append(value + "\n")
+
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        append_heading("YMYL Compliance Report", "HEADING_1")
+        append_label_value("Date: ", date_str)
+
+        count = 0
+        for violation in self.violations:
+            if "no violation" in violation.violation_type.lower():
+                continue
+
+            if count == 0:
+                append("\n")
+            else:
+                append("\n")
+
+            count += 1
+            emoji = _SEVERITY_EMOJI.get(violation.severity.value, "⚠️")
+            append_heading(f"{count}. {emoji} {violation.violation_type}", "HEADING_3")
+            append_label_value("Severity: ", violation.severity.value.title())
+            append_label_value("Problematic Text: ", f'"{violation.problematic_text}"')
+            if violation.translation:
+                append_label_value("Translation: ", violation.translation)
+            append_label_value("Explanation: ", violation.explanation)
+            append_label_value(
+                "Guideline: ",
+                f"Section {violation.guideline_section} (Page {violation.page_number})",
+            )
+            append_label_value("Suggested Fix: ", f'"{violation.suggested_rewrite}"')
+            if violation.rewrite_translation:
+                append_label_value("Fix Translation: ", violation.rewrite_translation)
+
+        if count == 0:
+            append("\n")
+            append("No violations found.\n")
+
+        return "".join(parts), heading_ranges, bold_ranges
 
     def _build_report_text(self):
         parts = []

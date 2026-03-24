@@ -218,6 +218,18 @@ class AdminLayout:
                         except Exception as e:
                             st.error(f"❌ Failed to create Google Doc: {str(e)}")
 
+        report_md = st.session_state.get('admin_analysis_report', '')
+        tab_report, tab_preview = st.tabs(["📄 Audit Report", "📋 Extracted Content"])
+        with tab_report:
+            if report_md:
+                st.markdown(report_md)
+            else:
+                st.warning("⚠️ No report in session state")
+        with tab_preview:
+            content = st.session_state.get('admin_analysis_content', '')
+            if content:
+                st.code(content, language='json')
+
         debug = st.session_state.get('admin_analysis_debug_mode', False)
         debug_info = st.session_state.get('admin_analysis_debug_info')
         if debug and debug_info:
