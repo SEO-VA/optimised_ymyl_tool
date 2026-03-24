@@ -178,12 +178,13 @@ class UserLayout:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
                     violations = st.session_state.get(f'{key}_violations', [])
                     content_json = st.session_state.get(extract_key, '{}')
+                    report = st.session_state.get(f'{key}_report', '')
                     feature_key = key.replace('user_analysis_', '')
                     source = st.session_state.get(f'user_source_{feature_key}', 'content')
                     title = f"YMYL Audit - {source}"
                     with st.spinner("Creating Google Doc..."):
                         try:
-                            url = processor.generate_google_doc(content_json, violations, user_email, title)
+                            url = processor.generate_google_doc(content_json, violations, user_email, title, report_markdown=report)
                             st.session_state[f'{key}_gdoc_url'] = url
                             st.rerun()
                         except Exception as e:

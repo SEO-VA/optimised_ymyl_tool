@@ -30,11 +30,13 @@ class GoogleDocExporter:
         violations: List[Violation],
         user_email: str,
         title: str,
+        report_markdown: str = "",
     ):
         self.content_json = content_json
         self.violations = violations
         self.user_email = user_email
         self.title = title
+        self.report_markdown = report_markdown
         self._docs = None
         self._drive = None
 
@@ -55,28 +57,38 @@ class GoogleDocExporter:
         doc_id = doc["documentId"]
         safe_log(f"GDocExporter: Created document {doc_id}")
 
-        # 2. Build document text and track section name ranges for heading styles
-        sections = self._parse_sections()
-        full_text, heading_ranges = self._build_doc_text(sections)
+        if self.report_markdown:
+            full_text, heading_ranges, bold_ranges = self._build_report_text()
+        else:
+            sections = self._parse_sections()
+            full_text, raw_ranges = self._build_doc_text(sections)
+            heading_ranges = [(start, end, "HEADING_2") for start, end in raw_ranges]
+            bold_ranges = []
 
-        # 3. Insert content in a single batchUpdate
         if full_text:
-            requests = [{"insertText": {"location": {"index": 1}, "text": full_text}}]
             self._docs.documents().batchUpdate(
-                documentId=doc_id, body={"requests": requests}
+                documentId=doc_id,
+                body={"requests": [{"insertText": {"location": {"index": 1}, "text": full_text}}]},
             ).execute()
 
-            # 4. Apply HEADING_2 to section name lines
-            if heading_ranges:
-                style_requests = []
-                for start, end in heading_ranges:
-                    style_requests.append({
-                        "updateParagraphStyle": {
-                            "range": {"startIndex": start + 1, "endIndex": end + 1},
-                            "paragraphStyle": {"namedStyleType": "HEADING_2"},
-                            "fields": "namedStyleType",
-                        }
-                    })
+            style_requests = []
+            for start, end, style in heading_ranges:
+                style_requests.append({
+                    "updateParagraphStyle": {
+                        "range": {"startIndex": start + 1, "endIndex": end + 1},
+                        "paragraphStyle": {"namedStyleType": style},
+                        "fields": "namedStyleType",
+                    }
+                })
+            for start, end in bold_ranges:
+                style_requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start + 1, "endIndex": end + 1},
+                        "textStyle": {"bold": True},
+                        "fields": "bold",
+                    }
+                })
+            if style_requests:
                 self._docs.documents().batchUpdate(
                     documentId=doc_id, body={"requests": style_requests}
                 ).execute()
@@ -123,6 +135,66 @@ class GoogleDocExporter:
                 pos += len(content) + 2
 
         return "".join(parts), heading_ranges
+
+    def _build_report_text(self):
+        parts = []
+        heading_ranges = []
+        bold_ranges = []
+        pos = 0
+
+        for raw_line in self.report_markdown.splitlines():
+            stripped = raw_line.strip()
+
+            if stripped == "---":
+                parts.append("\n")
+                pos += 1
+                continue
+
+            if stripped.startswith("# "):
+                text = stripped[2:]
+                start = pos
+                parts.append(text + "\n")
+                pos += len(text) + 1
+                heading_ranges.append((start, pos - 1, "HEADING_1"))
+                continue
+
+            if stripped.startswith("### "):
+                text = stripped[4:]
+                start = pos
+                parts.append(text + "\n")
+                pos += len(text) + 1
+                heading_ranges.append((start, pos - 1, "HEADING_3"))
+                continue
+
+            line = stripped[2:] if stripped.startswith("> ") else stripped
+            plain_line = []
+            line_pos = pos
+            index = 0
+
+            while index < len(line):
+                if line.startswith("**", index):
+                    end = line.find("**", index + 2)
+                    if end != -1:
+                        text = line[index + 2:end]
+                        start = line_pos + len("".join(plain_line))
+                        plain_line.append(text)
+                        bold_ranges.append((start, start + len(text)))
+                        index = end + 2
+                        continue
+                if line.startswith("_", index):
+                    end = line.find("_", index + 1)
+                    if end != -1:
+                        plain_line.append(line[index + 1:end])
+                        index = end + 1
+                        continue
+                plain_line.append(line[index])
+                index += 1
+
+            text = "".join(plain_line)
+            parts.append(text + "\n")
+            pos += len(text) + 1
+
+        return "".join(parts), heading_ranges, bold_ranges
 
     def _add_comment(self, doc_id: str, v: Violation, full_text: str):
         """Add a Drive API comment anchored to v.problematic_text."""

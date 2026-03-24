@@ -37,9 +37,9 @@ class AnalysisProcessor:
             safe_log(f"Report generation failed: {e}")
             result['success'] = False; result['error'] = str(e); return result
 
-    def generate_google_doc(self, content_json: str, violations: list, user_email: str, title: str) -> str:
+    def generate_google_doc(self, content_json: str, violations: list, user_email: str, title: str, report_markdown: str = "") -> str:
         from core.gdoc_exporter import GoogleDocExporter
-        exporter = GoogleDocExporter(content_json, violations, user_email, title)
+        exporter = GoogleDocExporter(content_json, violations, user_email, title, report_markdown=report_markdown)
         return exporter.export()
 
     def process_multi_file(self, *args, **kwargs): pass # Placeholder for multi-file

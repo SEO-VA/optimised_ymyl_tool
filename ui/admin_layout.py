@@ -173,6 +173,7 @@ class AdminLayout:
                 st.session_state['admin_analysis_complete'] = True
                 st.session_state['admin_analysis_word_bytes'] = result.get('word_bytes')
                 st.session_state['admin_analysis_violations'] = result.get('violations', [])
+                st.session_state['admin_analysis_report'] = result.get('report', '')
                 st.session_state['admin_analysis_source'] = source
                 st.session_state['admin_analysis_content'] = content
                 st.session_state['admin_analysis_debug_mode'] = debug
@@ -207,10 +208,11 @@ class AdminLayout:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
                     violations = st.session_state.get('admin_analysis_violations', [])
                     content = st.session_state.get('admin_analysis_content', '{}')
+                    report = st.session_state.get('admin_analysis_report', '')
                     title = f"YMYL Audit - {source}"
                     with st.spinner("Creating Google Doc..."):
                         try:
-                            url = processor.generate_google_doc(content, violations, user_email, title)
+                            url = processor.generate_google_doc(content, violations, user_email, title, report_markdown=report)
                             st.session_state['admin_analysis_gdoc_url'] = url
                             st.rerun()
                         except Exception as e:
