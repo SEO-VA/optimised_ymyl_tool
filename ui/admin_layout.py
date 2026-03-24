@@ -186,6 +186,7 @@ class AdminLayout:
 
     def _show_admin_results(self):
         source = st.session_state.get('admin_analysis_source', 'content')
+        user_email = get_current_user()
 
         col_word, col_gdoc = st.columns([1, 1])
         with col_word:
@@ -200,13 +201,12 @@ class AdminLayout:
                 st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
             elif not st.secrets.get("google_docs"):
                 st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
-            elif not get_credentials():
-                st.link_button("🔑 Authorize Google Drive", get_auth_url(), use_container_width=True)
+            elif not get_credentials(user_email):
+                st.link_button("🔑 Authorize Google Drive", get_auth_url(user_email), use_container_width=True)
             else:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
                     violations = st.session_state.get('admin_analysis_violations', [])
                     content = st.session_state.get('admin_analysis_content', '{}')
-                    user_email = get_current_user()
                     title = f"YMYL Audit - {source}"
                     with st.spinner("Creating Google Doc..."):
                         try:

@@ -158,6 +158,7 @@ class UserLayout:
 
     def _show_single_file_results(self, key, extract_key, selection_key=None):
         st.success("✅ Analysis Ready")
+        user_email = get_current_user()
 
         col_word, col_gdoc = st.columns([1, 1])
         with col_word:
@@ -171,13 +172,12 @@ class UserLayout:
                 st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
             elif not st.secrets.get("google_docs"):
                 st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
-            elif not get_credentials():
-                st.link_button("🔑 Authorize Google Drive", get_auth_url(), use_container_width=True)
+            elif not get_credentials(user_email):
+                st.link_button("🔑 Authorize Google Drive", get_auth_url(user_email), use_container_width=True)
             else:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
                     violations = st.session_state.get(f'{key}_violations', [])
                     content_json = st.session_state.get(extract_key, '{}')
-                    user_email = get_current_user()
                     feature_key = key.replace('user_analysis_', '')
                     source = st.session_state.get(f'user_source_{feature_key}', 'content')
                     title = f"YMYL Audit - {source}"
