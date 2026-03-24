@@ -10,6 +10,7 @@ __pycache__/
 *.so
 
 tests/*.py
+!tests/test_google_oauth.py
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
