@@ -34,7 +34,7 @@ pip-wheel-metadata/
 .DS_Store
 .claude/settings.local.json
 .claude/settings.json
-.streamlit/secrets.toml
+secrets.toml.example
 
 sqeg_2025_ymyl_knowledge.md
 
