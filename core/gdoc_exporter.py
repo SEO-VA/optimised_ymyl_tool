@@ -40,7 +40,7 @@ class GoogleDocExporter:
 
     def _build_clients(self):
         from core.google_oauth import get_credentials
-        creds = get_credentials()
+        creds = get_credentials(self.user_email)
         if not creds:
             raise ValueError("Google Drive not authorized. Please authorize first.")
         self._docs = build("docs", "v1", credentials=creds)
@@ -160,4 +160,3 @@ class GoogleDocExporter:
             safe_log(f"GDocExporter: Comment creation failed: {e}", "WARNING")
         except Exception as e:
             safe_log(f"GDocExporter: Unexpected error adding comment: {e}", "WARNING")
-
