@@ -38,6 +38,8 @@ pip-wheel-metadata/
 secrets.toml.example
 
 sqeg_2025_ymyl_knowledge.md
+reupload_knowledge.py
+test_api_key.py
 
 .dual-graph/
 

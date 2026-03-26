@@ -18,14 +18,29 @@ st.set_page_config(
     layout="wide" # Using wide for better visibility of logs
 )
 
+@st.dialog("⚠️ Test Version")
+def _show_test_warning():
+    st.warning("This is the test version of the YMYL tool.")
+    st.markdown("Please use the production version instead:")
+    st.link_button("Go to Production →", "https://ymyl-audit.streamlit.app", use_container_width=True)
+    if st.button("Continue to test version", use_container_width=True):
+        st.session_state["test_warning_dismissed"] = True
+        st.rerun()
+
+
 def main():
     """Main application entry point"""
 
-    # 0. Handle Google OAuth2 callback (must be before any rendering)
+    # 0. Show test version warning before anything else
+    if not st.session_state.get("test_warning_dismissed"):
+        _show_test_warning()
+        return
+
+    # 1. Handle Google OAuth2 callback (must be before any rendering)
     if handle_callback():
         st.rerun()
 
-    # 1. Authentication Barrier
+    # 2. Authentication Barrier
     if not check_authentication():
         return
     

@@ -60,6 +60,14 @@ def check_authentication() -> bool:
         return False
 
     email = email.lower()
+
+    allowed_emails = _get_allowed_emails()
+    if allowed_emails and email not in allowed_emails:
+        _clear_local_auth_state()
+        safe_log(f"Auth: Access denied for unlisted user {email}", "WARNING")
+        _render_email_not_allowed(email)
+        return False
+
     _set_authenticated_user(email, _OIDC_MODE)
     safe_log(f"Auth: Google login accepted for {email}")
     return True
@@ -147,6 +155,13 @@ def _render_access_denied(email: str, allowed_domain: str):
     st.button("🚪 Sign out and choose another account", type="primary", use_container_width=True, on_click=logout)
 
 
+def _render_email_not_allowed(email: str):
+    st.markdown("# 🔐 YMYL Audit Tool")
+    st.error(f"❌ Access denied for `{email}`.")
+    st.caption("This app is restricted to approved users only.")
+    st.button("🚪 Sign out", type="primary", use_container_width=True, on_click=logout)
+
+
 def _get_auth_settings():
     return st.secrets.get("auth", {})
 
@@ -206,6 +221,13 @@ def _get_allowed_domain() -> str:
     auth_settings = _get_auth_settings()
     allowed_domain = str(auth_settings.get("allowed_domain", "")).strip().lower()
     return allowed_domain.lstrip("@")
+
+
+def _get_allowed_emails() -> set:
+    """Return the set of explicitly allowed emails, or empty set if not configured."""
+    auth_settings = _get_auth_settings()
+    raw = auth_settings.get("allowed_emails", [])
+    return {email.lower() for email in _normalize_string_list(raw)}
 
 
 def _is_oidc_logged_in() -> bool:
