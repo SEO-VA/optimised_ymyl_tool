@@ -11,6 +11,7 @@ from core.google_oauth import (
 )
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
+from ui.external_links import render_same_tab_auth_link
 
 
 class UserLayout:
@@ -198,11 +199,10 @@ class UserLayout:
                 except Exception as e:
                     st.error(f"❌ Google authorization is not available: {str(e)}")
                 else:
-                    st.link_button(
+                    render_same_tab_auth_link(
                         "🔑 Authorize Google Drive",
                         auth_url,
-                        use_container_width=True,
-                        type="primary",
+                        primary=True,
                     )
             else:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):

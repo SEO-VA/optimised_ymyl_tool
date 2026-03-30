@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from core import google_oauth
 from core.models import Severity, Violation
+from ui import external_links
 
 
 class FakeQueryParams(dict):
@@ -387,6 +388,31 @@ class GoogleOAuthTests(unittest.TestCase):
 
         self.assertFalse(restored)
         self.assertNotIn(google_oauth._CALLBACK_SNAPSHOT_KEY, self.fake_st.session_state)
+
+
+class ExternalLinksTests(unittest.TestCase):
+    def test_render_same_tab_auth_link_outputs_safe_same_tab_markup(self):
+        class FakeStreamlit:
+            def __init__(self):
+                self.calls = []
+
+            def markdown(self, body, unsafe_allow_html=False):
+                self.calls.append((body, unsafe_allow_html))
+
+        fake_st = FakeStreamlit()
+
+        with patch.object(external_links, "st", fake_st):
+            external_links.render_same_tab_auth_link(
+                "Authorize <Google>",
+                "https://accounts.google.com/o/oauth2/auth?state=a&next=<home>",
+            )
+
+        self.assertEqual(len(fake_st.calls), 1)
+        body, unsafe_allow_html = fake_st.calls[0]
+        self.assertTrue(unsafe_allow_html)
+        self.assertIn('target="_self"', body)
+        self.assertIn("Authorize &lt;Google&gt;", body)
+        self.assertIn("state=a&amp;next=&lt;home&gt;", body)
 
 
 if __name__ == "__main__":
