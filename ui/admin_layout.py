@@ -5,14 +5,30 @@ Restored to stable state (No Translation Toggle).
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 from utils.feature_registry import FeatureRegistry
 from core.processor import processor
+from core.google_oauth import (
+    clear_analysis_snapshot,
+    get_auth_url,
+    get_credentials,
+    save_analysis_snapshot,
+)
 from utils.helpers import trigger_completion_notification
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
 from core.auth import get_current_user
 import json
 from dataclasses import is_dataclass, asdict
+
+
+def _redirect_browser(url: str):
+    components.html(
+        f"<script>window.top.location.href = {json.dumps(url)};</script>",
+        height=0,
+        width=0,
+    )
+
 
 class AdminLayout:
     _SELECTION_KEY = "admin_section_selection"
@@ -21,6 +37,7 @@ class AdminLayout:
         self.current_step = 2 if st.session_state.get('extracted_content') or st.session_state.get('admin_multi_extracted') else 1
     
     def render(self, selected_feature: str):
+        snapshot_context = f"admin:{selected_feature}"
         try:
             feature_handler = FeatureRegistry.get_handler(selected_feature)
         except ValueError as e:
@@ -38,12 +55,13 @@ class AdminLayout:
             if self.current_step == 1:
                 self._render_step1(feature_handler)
             else:
-                self._render_step2(feature_handler)
+                self._render_step2(feature_handler, snapshot_context)
         with col2:
             if st.button("🔄 Reset All", use_container_width=True):
-                self._smart_reset()
+                self._smart_reset(snapshot_context)
 
-    def _smart_reset(self):
+    def _smart_reset(self, snapshot_context: str = ""):
+        clear_analysis_snapshot(get_current_user(), snapshot_context)
         keys_to_keep = ['authenticated', 'username', 'global_topic_description']
         for key in list(st.session_state.keys()):
             if key not in keys_to_keep:
@@ -86,16 +104,16 @@ class AdminLayout:
                 else:
                     st.error(f"Extraction Failed: {err}")
 
-    def _render_step2(self, handler):
+    def _render_step2(self, handler, snapshot_context: str):
         col_head, col_btn = st.columns([3, 1])
         with col_head:
             st.subheader("Step 2: Analysis")
         with col_btn:
             if st.button("🗑️ Discard & Restart", type="secondary", use_container_width=True):
-                self._smart_reset()
+                self._smart_reset(snapshot_context)
 
         if st.session_state.get('admin_analysis_complete'):
-            self._show_admin_results()
+            self._show_admin_results(snapshot_context)
             return
 
         is_multi = 'admin_multi_extracted' in st.session_state
@@ -185,9 +203,28 @@ class AdminLayout:
             else:
                 st.error(result.get('error'))
 
-    def _show_admin_results(self):
+    def _show_admin_results(self, snapshot_context: str = ""):
         source = st.session_state.get('admin_analysis_source', 'content')
         user_email = get_current_user()
+        snapshot_keys = [
+            "main_analysis_type",
+            "test_warning_dismissed",
+            "extracted_content",
+            "source_info",
+            self._SELECTION_KEY,
+            "admin_analysis_complete",
+            "admin_analysis_word_bytes",
+            "admin_analysis_violations",
+            "admin_analysis_report",
+            "admin_analysis_source",
+            "admin_analysis_content",
+            "admin_analysis_debug_mode",
+            "admin_analysis_debug_info",
+            "admin_analysis_processing_time",
+            "admin_analysis_total_violations",
+            "admin_analysis_unique_violations",
+            "admin_analysis_gdoc_url",
+        ]
 
         col_word, col_gdoc = st.columns([1, 1])
         with col_word:
@@ -196,14 +233,15 @@ class AdminLayout:
                 st.download_button("📄 Download Report", word_bytes, f"Report_{source}.docx", type="primary", use_container_width=True)
 
         with col_gdoc:
-            from core.google_oauth import get_credentials, get_auth_url
             gdoc_url = st.session_state.get('admin_analysis_gdoc_url')
             if gdoc_url:
                 st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
             elif not st.secrets.get("google_docs"):
                 st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
             elif not get_credentials(user_email):
-                st.link_button("🔑 Authorize Google Drive", get_auth_url(user_email), use_container_width=True)
+                if st.button("🔑 Authorize Google Drive", use_container_width=True, key="admin_authorize_google_drive"):
+                    save_analysis_snapshot(user_email, snapshot_context, snapshot_keys)
+                    _redirect_browser(get_auth_url(user_email, snapshot_context=snapshot_context))
             else:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
                     violations = st.session_state.get('admin_analysis_violations', [])

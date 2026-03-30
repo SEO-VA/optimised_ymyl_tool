@@ -50,3 +50,5 @@ AGENTS.md
 docs/PROJECT_RECAP.md
 docs/plan-template.md
 docs/plans/
+
+.streamlit/secrets.toml

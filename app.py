@@ -9,7 +9,7 @@ from core.auth import check_authentication, logout, get_current_user, is_current
 from core.state import state_manager
 from ui.user_layout import UserLayout
 from ui.admin_layout import AdminLayout
-from core.google_oauth import handle_callback
+from core.google_oauth import handle_callback, restore_pending_analysis_snapshot
 
 # Configure Streamlit page
 st.set_page_config(
@@ -31,14 +31,15 @@ def _show_test_warning():
 def main():
     """Main application entry point"""
 
-    # 0. Show test version warning before anything else
-    if not st.session_state.get("test_warning_dismissed"):
+    # 0. Handle Google OAuth2 callback before any rendering that could block it.
+    if handle_callback():
+        restore_pending_analysis_snapshot()
+        st.rerun()
+
+    # 1. Show test version warning before anything else
+    if hasattr(st, "session_state") and not st.session_state.get("test_warning_dismissed"):
         _show_test_warning()
         return
-
-    # 1. Handle Google OAuth2 callback (must be before any rendering)
-    if handle_callback():
-        st.rerun()
 
     # 2. Authentication Barrier
     if not check_authentication():

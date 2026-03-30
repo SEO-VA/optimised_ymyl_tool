@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
+import json
 import streamlit as st
+import streamlit.components.v1 as components
 from utils.feature_registry import FeatureRegistry
 from core.processor import processor
 from core.state import state_manager
 from core.auth import get_current_user
+from core.google_oauth import (
+    clear_analysis_snapshot,
+    get_auth_url,
+    get_credentials,
+    save_analysis_snapshot,
+)
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
+
+
+def _redirect_browser(url: str):
+    components.html(
+        f"<script>window.top.location.href = {json.dumps(url)};</script>",
+        height=0,
+        width=0,
+    )
 
 
 class UserLayout:
@@ -19,6 +35,7 @@ class UserLayout:
         analysis_key = f"user_analysis_{selected_feature}"
         extract_key = f"user_extracted_{selected_feature}"
         selection_key = f"user_section_selection_{selected_feature}"
+        snapshot_context = f"user:{selected_feature}"
         is_processing = state_manager.is_processing
 
         col_input, col_opts = st.columns([3, 1])
@@ -43,7 +60,7 @@ class UserLayout:
         has_result = bool(st.session_state.get(f'{analysis_key}_complete'))
 
         if has_result:
-            self._show_single_file_results(analysis_key, extract_key, selection_key)
+            self._show_single_file_results(analysis_key, extract_key, selection_key, snapshot_context)
             return
 
         c1, c2, c3 = st.columns([1, 2, 1])
@@ -68,6 +85,7 @@ class UserLayout:
                         st.rerun()
                 with col_reset:
                     if st.button("↩️ Re-extract", use_container_width=True):
+                        clear_analysis_snapshot(get_current_user(), snapshot_context)
                         for k in [extract_key, f"user_source_{selected_feature}", selection_key]:
                             st.session_state.pop(k, None)
                         st.rerun()
@@ -156,9 +174,23 @@ class UserLayout:
     def _run_multi_file(self, feature_handler, input_data, topic_description):
         pass
 
-    def _show_single_file_results(self, key, extract_key, selection_key=None):
+    def _show_single_file_results(self, key, extract_key, selection_key=None, snapshot_context=""):
         st.success("✅ Analysis Ready")
         user_email = get_current_user()
+        feature_key = key.replace('user_analysis_', '')
+        snapshot_keys = [
+            "main_analysis_type",
+            "test_warning_dismissed",
+            extract_key,
+            f"{key}_complete",
+            f"{key}_report",
+            f"{key}_word_bytes",
+            f"{key}_violations",
+            f"{key}_gdoc_url",
+            f"user_source_{feature_key}",
+        ]
+        if selection_key:
+            snapshot_keys.append(selection_key)
 
         col_word, col_gdoc = st.columns([1, 1])
         with col_word:
@@ -166,20 +198,20 @@ class UserLayout:
                 st.download_button("📄 Download Word Report", st.session_state[f'{key}_word_bytes'], "report.docx", use_container_width=True)
 
         with col_gdoc:
-            from core.google_oauth import get_credentials, get_auth_url
             gdoc_url = st.session_state.get(f'{key}_gdoc_url')
             if gdoc_url:
                 st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
             elif not st.secrets.get("google_docs"):
                 st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
             elif not get_credentials(user_email):
-                st.link_button("🔑 Authorize Google Drive", get_auth_url(user_email), use_container_width=True)
+                if st.button("🔑 Authorize Google Drive", use_container_width=True, key=f"{key}_authorize_google_drive"):
+                    save_analysis_snapshot(user_email, snapshot_context, snapshot_keys)
+                    _redirect_browser(get_auth_url(user_email, snapshot_context=snapshot_context))
             else:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
                     violations = st.session_state.get(f'{key}_violations', [])
                     content_json = st.session_state.get(extract_key, '{}')
                     report = st.session_state.get(f'{key}_report', '')
-                    feature_key = key.replace('user_analysis_', '')
                     source = st.session_state.get(f'user_source_{feature_key}', 'content')
                     title = f"YMYL Audit - {source}"
                     with st.spinner("Creating Google Doc..."):
@@ -200,6 +232,7 @@ class UserLayout:
                 st.info("Extracted content not available.")
 
         if st.button("🔄 Start New Analysis"):
+            clear_analysis_snapshot(user_email, snapshot_context)
             prefix = key.replace('user_analysis_', 'user_')
             keys_to_del = [k for k in st.session_state.keys()
                            if k.startswith(key) or k == extract_key or k.startswith(prefix)]

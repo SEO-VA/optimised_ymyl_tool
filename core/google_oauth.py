@@ -23,10 +23,13 @@ import json
 import os
 import secrets
 import time
+from dataclasses import asdict, is_dataclass
+from enum import Enum
 import streamlit as st
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import Flow
+from core.parser import ResponseParser
 from utils.helpers import safe_log
 
 SCOPES = [
@@ -34,9 +37,12 @@ SCOPES = [
 ]
 
 _SESSION_KEY = "gdoc_credentials"
+_CALLBACK_SNAPSHOT_KEY = "gdoc_callback_snapshot"
 _STORAGE_DIR = "/tmp"
 _STATE_MAX_AGE_SECONDS = 15 * 60
 _STATE_VERSION = 1
+_SNAPSHOT_VERSION = 1
+_SNAPSHOT_TYPE_KEY = "__snapshot_type__"
 _TOKEN_FIELDS = (
     "token",
     "refresh_token",
@@ -45,6 +51,11 @@ _TOKEN_FIELDS = (
     "client_secret",
     "scopes",
 )
+_VIOLATION_STATE_KEYS = {
+    "admin_analysis_violations",
+    "user_analysis_url_analysis_violations",
+    "user_analysis_html_analysis_violations",
+}
 
 
 def _normalize_identity(identity: str = "") -> str:
@@ -52,13 +63,23 @@ def _normalize_identity(identity: str = "") -> str:
     return identity or "default"
 
 
-def _storage_path(prefix: str, identity: str) -> str:
-    digest = hashlib.sha256(_normalize_identity(identity).encode("utf-8")).hexdigest()[:16]
+def _normalize_snapshot_context(snapshot_context: str = "") -> str:
+    snapshot_context = str(snapshot_context or "").strip().lower()
+    return snapshot_context or "default"
+
+
+def _storage_path(prefix: str, identity: str, suffix: str = "") -> str:
+    storage_key = f"{_normalize_identity(identity)}:{suffix}" if suffix else _normalize_identity(identity)
+    digest = hashlib.sha256(storage_key.encode("utf-8")).hexdigest()[:16]
     return os.path.join(_STORAGE_DIR, f"{prefix}_{digest}.json")
 
 
 def _token_path(identity: str) -> str:
     return _storage_path("gdoc_token", identity)
+
+
+def _snapshot_path(identity: str, snapshot_context: str) -> str:
+    return _storage_path("gdoc_snapshot", identity, _normalize_snapshot_context(snapshot_context))
 
 
 def _save_json(path: str, payload: dict):
@@ -162,19 +183,139 @@ def _decode_state(state_value: str) -> dict:
 
     payload["age_seconds"] = age_seconds
     payload["identity"] = _normalize_identity(payload.get("identity", ""))
+    payload["snapshot_context"] = _normalize_snapshot_context(payload.get("snapshot_context", ""))
     return payload
 
 
-def _build_state_payload(identity: str, code_verifier: str) -> dict:
+def _build_state_payload(identity: str, code_verifier: str, snapshot_context: str = "") -> dict:
     if not code_verifier:
         raise ValueError("missing PKCE code verifier")
     return {
         "v": _STATE_VERSION,
         "identity": _normalize_identity(identity),
+        "snapshot_context": _normalize_snapshot_context(snapshot_context),
         "iat": _get_state_now(),
         "nonce": secrets.token_urlsafe(12),
         "code_verifier": code_verifier,
     }
+
+
+def _serialize_snapshot_value(value):
+    if is_dataclass(value):
+        return _serialize_snapshot_value(asdict(value))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, bytes):
+        return {
+            _SNAPSHOT_TYPE_KEY: "bytes",
+            "data": _urlsafe_b64encode(value),
+        }
+    if isinstance(value, dict):
+        return {str(key): _serialize_snapshot_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_snapshot_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _deserialize_snapshot_value(value):
+    if isinstance(value, dict):
+        if value.get(_SNAPSHOT_TYPE_KEY) == "bytes":
+            return _urlsafe_b64decode(value.get("data", ""))
+        return {key: _deserialize_snapshot_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_deserialize_snapshot_value(item) for item in value]
+    return value
+
+
+def _coerce_snapshot_session_value(key: str, value):
+    restored = _deserialize_snapshot_value(value)
+    if key in _VIOLATION_STATE_KEYS and isinstance(restored, list):
+        violations, _ = ResponseParser.parse_payload_to_violations({"violations": restored})
+        return violations
+    return restored
+
+
+def save_analysis_snapshot(user_email: str, snapshot_context: str, session_keys: list[str]) -> bool:
+    identity = _normalize_identity(user_email)
+    normalized_context = _normalize_snapshot_context(snapshot_context)
+    state = {
+        key: _serialize_snapshot_value(st.session_state[key])
+        for key in session_keys
+        if key in st.session_state
+    }
+
+    if not state:
+        _delete_file(_snapshot_path(identity, normalized_context))
+        return False
+
+    payload = {
+        "v": _SNAPSHOT_VERSION,
+        "identity": identity,
+        "context": normalized_context,
+        "saved_at": _get_state_now(),
+        "state": state,
+    }
+    _save_json(_snapshot_path(identity, normalized_context), payload)
+    safe_log(
+        f"GoogleOAuth: Saved analysis snapshot for {identity} ({normalized_context}) with {len(state)} keys"
+    )
+    return True
+
+
+def restore_analysis_snapshot(user_email: str, snapshot_context: str) -> bool:
+    identity = _normalize_identity(user_email)
+    normalized_context = _normalize_snapshot_context(snapshot_context)
+    payload = _load_json(_snapshot_path(identity, normalized_context))
+
+    if not payload:
+        return False
+
+    if payload.get("v") != _SNAPSHOT_VERSION:
+        safe_log(
+            f"GoogleOAuth: Ignoring snapshot for {identity} ({normalized_context}) due to version mismatch",
+            "WARNING",
+        )
+        return False
+
+    if payload.get("identity") != identity or payload.get("context") != normalized_context:
+        safe_log(
+            f"GoogleOAuth: Ignoring snapshot for {identity} ({normalized_context}) due to identity/context mismatch",
+            "WARNING",
+        )
+        return False
+
+    state = payload.get("state", {})
+    if not isinstance(state, dict):
+        safe_log(
+            f"GoogleOAuth: Ignoring snapshot for {identity} ({normalized_context}) because state was invalid",
+            "WARNING",
+        )
+        return False
+
+    for key, value in state.items():
+        st.session_state[key] = _coerce_snapshot_session_value(key, value)
+
+    _delete_file(_snapshot_path(identity, normalized_context))
+    safe_log(
+        f"GoogleOAuth: Restored analysis snapshot for {identity} ({normalized_context}) with {len(state)} keys"
+    )
+    return True
+
+
+def restore_pending_analysis_snapshot() -> bool:
+    pending = st.session_state.pop(_CALLBACK_SNAPSHOT_KEY, None)
+    if not isinstance(pending, dict):
+        return False
+    return restore_analysis_snapshot(
+        pending.get("identity", ""),
+        pending.get("context", ""),
+    )
+
+
+def clear_analysis_snapshot(user_email: str, snapshot_context: str):
+    _delete_file(_snapshot_path(user_email, snapshot_context))
 
 
 def _build_creds_dict(creds: Credentials, identity: str) -> dict:
@@ -255,12 +396,12 @@ def _get_flow(code_verifier: str | None = None) -> Flow:
     )
 
 
-def get_auth_url(user_email: str = "") -> str:
+def get_auth_url(user_email: str = "", snapshot_context: str = "") -> str:
     """Generate the Google OAuth2 consent URL with signed PKCE state."""
     identity = _normalize_identity(user_email)
     code_verifier = secrets.token_urlsafe(64)
     flow = _get_flow(code_verifier=code_verifier)
-    state_value = _encode_state(_build_state_payload(identity, code_verifier))
+    state_value = _encode_state(_build_state_payload(identity, code_verifier, snapshot_context))
     auth_url, _ = flow.authorization_url(
         access_type="offline",
         prompt="consent",
@@ -289,6 +430,7 @@ def handle_callback() -> bool:
     try:
         state_payload = _decode_state(raw_state)
         identity = state_payload["identity"]
+        snapshot_context = state_payload["snapshot_context"]
         safe_log(
             f"GoogleOAuth: Handling callback for {identity} (state age {state_payload['age_seconds']}s)"
         )
@@ -304,6 +446,10 @@ def handle_callback() -> bool:
         creds = flow.credentials
         creds_dict = _build_creds_dict(creds, identity)
         st.session_state[_SESSION_KEY] = creds_dict
+        st.session_state[_CALLBACK_SNAPSHOT_KEY] = {
+            "identity": identity,
+            "context": snapshot_context,
+        }
         _save_to_file(identity, creds_dict)
         safe_log(f"GoogleOAuth: Stored credentials for {identity}")
     except Exception as exc:
