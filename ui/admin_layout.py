@@ -15,7 +15,7 @@ from core.google_oauth import (
 from utils.helpers import trigger_completion_notification
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
-from ui.external_links import render_same_tab_auth_link
+from ui.external_links import open_url_on_load, render_same_tab_auth_link
 from core.auth import get_current_user
 from dataclasses import is_dataclass, asdict
 
@@ -224,6 +224,10 @@ class AdminLayout:
 
         with col_gdoc:
             gdoc_url = st.session_state.get('admin_analysis_gdoc_url')
+            pending_gdoc_url = st.session_state.get('admin_analysis_gdoc_open_pending')
+            if pending_gdoc_url:
+                open_url_on_load(pending_gdoc_url)
+                st.session_state.pop('admin_analysis_gdoc_open_pending', None)
             if gdoc_url:
                 st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
             elif not st.secrets.get("google_docs"):
@@ -249,6 +253,7 @@ class AdminLayout:
                         try:
                             url = processor.generate_google_doc(content, violations, user_email, title, report_markdown=report)
                             st.session_state['admin_analysis_gdoc_url'] = url
+                            st.session_state['admin_analysis_gdoc_open_pending'] = url
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Failed to create Google Doc: {str(e)}")

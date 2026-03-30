@@ -414,6 +414,28 @@ class ExternalLinksTests(unittest.TestCase):
         self.assertIn("Authorize &lt;Google&gt;", body)
         self.assertIn("state=a&amp;next=&lt;home&gt;", body)
 
+    def test_open_url_on_load_enables_javascript_with_open_fallback(self):
+        class FakeStreamlit:
+            def __init__(self):
+                self.calls = []
+
+            def html(self, body, unsafe_allow_javascript=False):
+                self.calls.append((body, unsafe_allow_javascript))
+
+        fake_st = FakeStreamlit()
+
+        with patch.object(external_links, "st", fake_st):
+            external_links.open_url_on_load(
+                "https://docs.google.com/document/d/abc123/edit?next=<report>",
+            )
+
+        self.assertEqual(len(fake_st.calls), 1)
+        body, unsafe_allow_javascript = fake_st.calls[0]
+        self.assertTrue(unsafe_allow_javascript)
+        self.assertIn("window.open", body)
+        self.assertIn("window.location.assign", body)
+        self.assertIn("next=&lt;report&gt;", body)
+
 
 if __name__ == "__main__":
     unittest.main()

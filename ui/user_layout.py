@@ -11,7 +11,7 @@ from core.google_oauth import (
 )
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
-from ui.external_links import render_same_tab_auth_link
+from ui.external_links import open_url_on_load, render_same_tab_auth_link
 
 
 class UserLayout:
@@ -189,6 +189,10 @@ class UserLayout:
 
         with col_gdoc:
             gdoc_url = st.session_state.get(f'{key}_gdoc_url')
+            pending_gdoc_url = st.session_state.get(f'{key}_gdoc_open_pending')
+            if pending_gdoc_url:
+                open_url_on_load(pending_gdoc_url)
+                st.session_state.pop(f'{key}_gdoc_open_pending', None)
             if gdoc_url:
                 st.link_button("📝 Open Google Doc", gdoc_url, use_container_width=True)
             elif not st.secrets.get("google_docs"):
@@ -215,6 +219,7 @@ class UserLayout:
                         try:
                             url = processor.generate_google_doc(content_json, violations, user_email, title, report_markdown=report)
                             st.session_state[f'{key}_gdoc_url'] = url
+                            st.session_state[f'{key}_gdoc_open_pending'] = url
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Failed to create Google Doc: {str(e)}")

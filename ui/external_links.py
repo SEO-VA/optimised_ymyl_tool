@@ -4,6 +4,7 @@ Helpers for rendering external links with explicit browser-tab behavior.
 """
 
 import html
+import json
 
 import streamlit as st
 
@@ -37,3 +38,23 @@ def _build_same_tab_link_html(label: str, url: str, primary: bool = True) -> str
 def render_same_tab_auth_link(label: str, url: str, primary: bool = True) -> None:
     """Render an external auth link that navigates in the current tab."""
     st.markdown(_build_same_tab_link_html(label, url, primary=primary), unsafe_allow_html=True)
+
+
+def _build_auto_open_link_html(url: str) -> str:
+    safe_url = html.escape(url, quote=True)
+    js_url = json.dumps(url)
+    return (
+        "<div style=\"display:none\"></div>"
+        "<script>"
+        f"(() => {{ const url = {js_url}; "
+        "const opened = window.open(url, '_blank', 'noopener,noreferrer'); "
+        "if (!opened) { window.location.assign(url); }"
+        " }})();"
+        "</script>"
+        f'<noscript><meta http-equiv="refresh" content="0; url={safe_url}"></noscript>'
+    )
+
+
+def open_url_on_load(url: str) -> None:
+    """Open a URL as soon as it is rendered, preferring a new tab."""
+    st.html(_build_auto_open_link_html(url), unsafe_allow_javascript=True)
