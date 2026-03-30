@@ -123,6 +123,34 @@ class GoogleOAuthTests(unittest.TestCase):
         self.assertEqual(decoded_state["nonce"], "nonce-456")
         self.assertEqual(decoded_state["snapshot_context"], "user:url_analysis")
 
+    def test_prepare_auth_url_saves_snapshot_before_generating_auth_url(self):
+        calls = []
+
+        def fake_save(identity, context, session_keys):
+            calls.append(("save", identity, context, session_keys))
+            return True
+
+        def fake_auth(identity, snapshot_context=""):
+            calls.append(("auth", identity, snapshot_context))
+            return "https://accounts.google.com/o/oauth2/auth"
+
+        with patch.object(google_oauth, "save_analysis_snapshot", side_effect=fake_save), \
+             patch.object(google_oauth, "get_auth_url", side_effect=fake_auth):
+            auth_url = google_oauth.prepare_auth_url(
+                "user@example.com",
+                "user:url_analysis",
+                ["user_analysis_url_analysis_report"],
+            )
+
+        self.assertEqual(auth_url, "https://accounts.google.com/o/oauth2/auth")
+        self.assertEqual(
+            calls,
+            [
+                ("save", "user@example.com", "user:url_analysis", ["user_analysis_url_analysis_report"]),
+                ("auth", "user@example.com", "user:url_analysis"),
+            ],
+        )
+
     def test_handle_callback_succeeds_with_fresh_session_and_signed_state(self):
         flows = FlowFactory()
         saved = {}

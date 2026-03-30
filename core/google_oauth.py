@@ -411,6 +411,12 @@ def get_auth_url(user_email: str = "", snapshot_context: str = "") -> str:
     return auth_url
 
 
+def prepare_auth_url(user_email: str, snapshot_context: str, session_keys: list[str]) -> str:
+    """Persist the current analysis state, then return a fresh Google consent URL."""
+    save_analysis_snapshot(user_email, snapshot_context, session_keys)
+    return get_auth_url(user_email, snapshot_context=snapshot_context)
+
+
 def handle_callback() -> bool:
     """
     Check st.query_params for an OAuth callback. If found, exchange the code

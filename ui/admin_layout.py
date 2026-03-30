@@ -5,29 +5,18 @@ Restored to stable state (No Translation Toggle).
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 from utils.feature_registry import FeatureRegistry
 from core.processor import processor
 from core.google_oauth import (
     clear_analysis_snapshot,
-    get_auth_url,
     get_credentials,
-    save_analysis_snapshot,
+    prepare_auth_url,
 )
 from utils.helpers import trigger_completion_notification
 from ui.content_preview import render_content_preview
 from ui.content_selection import filter_content_json
 from core.auth import get_current_user
-import json
 from dataclasses import is_dataclass, asdict
-
-
-def _redirect_browser(url: str):
-    components.html(
-        f"<script>window.top.location.href = {json.dumps(url)};</script>",
-        height=0,
-        width=0,
-    )
 
 
 class AdminLayout:
@@ -239,9 +228,17 @@ class AdminLayout:
             elif not st.secrets.get("google_docs"):
                 st.error("❌ Google Docs not configured. Add `[google_docs]` to `.streamlit/secrets.toml`")
             elif not get_credentials(user_email):
-                if st.button("🔑 Authorize Google Drive", use_container_width=True, key="admin_authorize_google_drive"):
-                    save_analysis_snapshot(user_email, snapshot_context, snapshot_keys)
-                    _redirect_browser(get_auth_url(user_email, snapshot_context=snapshot_context))
+                try:
+                    auth_url = prepare_auth_url(user_email, snapshot_context, snapshot_keys)
+                except Exception as e:
+                    st.error(f"❌ Google authorization is not available: {str(e)}")
+                else:
+                    st.link_button(
+                        "🔑 Authorize Google Drive",
+                        auth_url,
+                        use_container_width=True,
+                        type="primary",
+                    )
             else:
                 if st.button("📝 Create Google Doc with Comments", use_container_width=True):
                     violations = st.session_state.get('admin_analysis_violations', [])
